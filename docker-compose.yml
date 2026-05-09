@@ -1,0 +1,29 @@
+version: '3.8'
+
+services:
+  redis:
+    image: redis:alpine
+    ports:
+      - "6379:6379"
+    command: redis-server --appendonly yes
+
+  # ClickHouse for Observability
+  clickhouse:
+    image: clickhouse/clickhouse-server
+    ports:
+      - "8123:8123"
+      - "9000:9000"
+    ulimits:
+      nofile:
+        soft: 262144
+        hard: 262144
+
+  # Main Application (optional if running locally via tsx)
+  # control-plane:
+  #   build: .
+  #   depends_on:
+  #     - redis
+  #     - clickhouse
+  #   environment:
+  #     - REDIS_URL=redis://redis:6379
+  #     - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
