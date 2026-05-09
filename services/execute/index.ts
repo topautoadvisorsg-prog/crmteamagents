@@ -8,7 +8,7 @@ dotenv.config();
 const app = express();
 app.use(express.json());
 
-const PORT = process.env.EXECUTE_PORT || 3002;
+const PORT = process.env.PORT || process.env.EXECUTE_PORT || 3002;
 const WEBHOOK_SECRET = process.env.AGENT_WEBHOOK_SECRET || "";
 const CRM_CALLBACK_URL = process.env.CRM_CALLBACK_URL || "http://localhost:5000/api/agent/callback";
 
