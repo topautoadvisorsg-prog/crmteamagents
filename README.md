@@ -1,137 +1,204 @@
-# AI Lead Execution Control Plane (V1.6)
+# AI Lead Execution Control Plane (V1.7)
+
+**Last Updated:** May 10, 2026  
+**Status:** Active — deployed on Railway  
+**Paired with:** SmartKlix CRM (smartklix23)
+
+---
 
 ## 1. System Overview
-The **AI Lead Execution Control Plane** is a deterministic, event-driven execution engine designed to process business events and execute high-stakes actions (Email, SMS, Scaping, Booking) through a strict safety and validation pipeline.
+
+The **AI Lead Execution Control Plane** is a deterministic, event-driven execution engine for processing business events and executing outreach actions (Email, SMS, Scraping, Booking) through a strict safety and validation pipeline.
 
 **What this system is NOT:**
-- It is NOT an autonomous agent.
-- It does NOT give LLMs direct execution authority.
-- It is NOT a monolithic application.
+- It is NOT an autonomous agent
+- It does NOT give LLMs direct execution authority
+- It is NOT a monolithic application
 
-## 2. Architecture Diagram
-```text
+**What it IS:**
+- The execution arm of SmartKlix CRM
+- A prospect discovery and dedup engine
+- A safety-gated outreach platform
+
+---
+
+## 2. Architecture
+
+```
 [CRM Webhook]
       |
-[Ingestion Service] ----> [Zod Validation]
+[Ingestion Service] ──► [Zod Validation] ──► [Idempotency Check]
       |
-[Redis Streams (SSOT)] <---- [Event History]
+[Redis Streams (SSOT)] ◄── [Event History]
       |
 [Worker Pool (Consumer Groups)]
       |
-      +--> [Context Builder] (Stateless State Aggregation)
+      ├──► [Context Builder]     (Stateless State Aggregation)
       |
-      +--> [Policy Engine] (Deterministic Rules - BEFORE LLM)
+      ├──► [Policy Engine]       (Deterministic Rules — BEFORE LLM)
+      |         Rule 1: No outreach on weekends
+      |         Rule 2: Max loop depth (5)
+      |         Rule 3: Tenant isolation
+      |         Rule 4: Do-Not-Outreach hard block ← NEW v1.7
+      |         Rule 5: Warm lead gate
       |
-      +--> [LLM Classifier] (Claude-3: Intent Extraction ONLY)
+      ├──► [LLM Classifier]      (Claude-3: Intent Extraction ONLY, 0.70 threshold)
       |
-      +--> [Execution Gate] (8-Stage Safety Validation)
-      |         |-- Schema, Policy, Skill, Permission,
-      |         |-- Semantic, Idempotency, Rate Limit, Confidence
+      ├──► [Execution Gate]      (8-Stage Safety Validation)
       |
-      +--> [Atomic Lock] (Redis SET NX)
+      ├──► [Atomic Lock]         (Redis SET NX)
       |
-      +--> [Skill Router] --> [Skill Worker] --> [SDK Layer] ----> [External APIs]
-      |                                              |              (Resend, Twilio, etc.)
-      |                                              +--> [Retries w/ Backoff]
-      |
-[Observability Pipeline] ----> [ClickHouse] + [Redis Streams]
+      └──► [Skill Router] ──► [Skill Worker] ──► [SDK Layer] ──► [External APIs]
+                                                                  (Resend, Twilio, etc.)
+
+[Observability] ──► [ClickHouse] + [Redis Streams]
+
+[Prospect Store] ──► [Redis] ──► async sync ──► [CRM /api/prospects]
 ```
 
-## 3. Core Concepts
-- **Redis Streams as SSOT**: Every event is an immutable record. State is derived, not stored.
-- **Execution Gate**: A "Hard Safety Layer" that must return a 100% PASS before any side-effect occurs.
-- **Policy Engine**: Hard-coded business logic that overrules any LLM decision.
-- **LLM Classification**: Used solely for routing and data extraction, never for control logic.
+---
 
-## 4. Execution Flow
-1. **Ingestion**: `/api/intake/lead` validates payload, checks **idempotency_key**, and assigns a unique `trace_id`.
-   - Supports **JWT (Bearer)** and **X-INTERNAL-TOKEN** authentication.
-   - Enforces `LeadIntakeEventSchema` (snake_case).
-2. **Consumption**: Workers pull via `XREADGROUP`, ensuring distributed partitioning.
-3. **Classification**: Claude extraction with a strict **0.70 confidence threshold**.
-4. **Safety Check**: Execution Gate verifies idempotency and semantic validity.
-5. **Execution**: Skill execution via SDK with exponential backoff retries.
-6. **Sync Callback**: `crm_sync` skill notifies the CRM via `/api/intake/sync` with an **HMAC-SHA256 signature**.
-7. **Finalization**: `XACK` marks message as processed; trace logged to ClickHouse.
+## 3. Skills Registry
 
-## 5. Adding a New Skill
-1. **Create Skill**: Add a new entry in `services/skill-router/registry.ts`.
-2. **Define Contract**:
-   ```typescript
-   my_new_skill: {
-     name: "my_new_skill",
-     version: "1.0.0",
-     input_schema: { ... },
-     output_schema: { ... },
-     timeout_ms: 5000,
-     retries: 3,
-     idempotent: true,
-     async execute(input: any) {
-       // Implementation using SDK
-     }
-   }
-   ```
-3. **Register SDK**: If needed, add the provider logic in `sdk/index.ts`.
+| Skill | What it does | Requires |
+|-------|-------------|---------|
+| `check_prospect` | Dedup check — call BEFORE any outreach | phone or email |
+| `register_prospect` | Log new prospect to Redis + sync to CRM | phone or email |
+| `mark_do_not_outreach` | Block prospect from all automated outreach | phone or email |
+| `send_email` | Send email via Resend | warm lead or new |
+| `send_sms` | Send SMS via Twilio | warm lead or new |
+| `scrape_site` | Scrape URL via Firecrawl | warm lead only |
+| `book_call` | Book Calendly meeting | warm lead only |
+| `crm_sync` | Callback to CRM `/api/intake/sync` | warm lead only |
 
-## 6. Execution Guarantees
-- **At-Least-Once Ingestion**: CRM webhooks are buffered in Redis Streams immediately.
-- **Exactly-Once Execution (Logical)**: Enforced via the combination of Redis Consumer Groups (delivery) and Atomic Idempotency Locks (execution).
-- **At-Least-Once Logging**: Observability logs are emitted to both Redis and ClickHouse. In case of ClickHouse failure, logs remain in the Redis `observability_stream` for later drain.
+---
 
-## 7. Safety Model
-- **Idempotency Lifecycle**: 
-  - `reserveIdempotency`: Sets state to `IN_PROGRESS` (TTL: 1h).
-  - `updateExecutionState`: Sets state to `COMPLETED` (TTL: 24h) or `FAILED`.
-- **Confidence Guard**: Any LLM classification with < 0.70 confidence is automatically blocked.
-- **Loop Protection**: Maximum depth of 5 actions per trace to prevent recursive loops.
+## 4. Prospect Store (v1.7)
 
-## 8. Failure Recovery Playbook
-### Scenario: Worker Crashes Mid-Execution
-- **Detection**: Redis Consumer Group PEL will show the message as "pending" but unacknowledged.
-- **Recovery**: Another worker can claim the message via `XCLAIM`. The `ExecutionGate` will check the idempotency key. If it finds `IN_PROGRESS`, it will block until the lock expires (1 hour) or until an operator resets the state.
+Redis-backed dedup layer. Agent's source of truth for who has already been found/contacted.
 
-### Scenario: Redis Service Failure
-- **Detection**: Ingestion service will return 500.
-- **Recovery**: Infrastructure must be restarted. Since the stream is persisted (`APPENDONLY yes`), no data is lost upon restart. Workers will resume from the last acknowledged ID.
+**Key pattern:** `prospect:phone:{normalized}`, `prospect:email:{normalized}`, `prospect:id:{uuid}`  
+**TTL:** 90 days  
+**CRM sync:** Async — Redis writes complete first, CRM sync runs in background (non-blocking)
 
-### Scenario: Persistent Skill Failure (API Outage)
-- **Detection**: Status `FAILED` in ClickHouse/Redis idempotency key.
-- **Recovery**: Fix the external API issue. Use the **Admin API** `POST /retry/:action_hash` to safely reset the state and allow a retry.
+### Status Lifecycle
+```
+new → outreached → responded → converted
+                             → do_not_outreach
+```
 
-## 9. Reconciliation Engine
-The system includes a background `ReconciliationService` that:
-- Scans the Redis PEL (Pending Entries List) for "stuck" messages (> 5 mins idle).
-- Detects "poison pills" (messages with > 5 delivery attempts) and acknowledges them to stop the loop.
-- Enables auto-healing of distributed state inconsistencies.
+### Agent Workflow
+```
+1. Find someone → register_prospect (dedup auto-checked)
+2. Before reaching out → check_prospect (instant Redis lookup)
+3. If known + do_not_outreach → Policy Engine HARD BLOCKS — no outreach
+4. If known + converted → Policy Engine HARD BLOCKS — direct CRM contact only
+5. They respond "already a customer" → mark_do_not_outreach
+6. CRM user reviews prospects at /prospect-pool, converts to full contact
+```
 
-## 10. Admin Control Plane
-A dedicated API (default port `3001`) provides safe operational control:
-- `GET /status/:trace_id`: Query the current lifecycle state.
-- `POST /retry/:action_hash`: Reset idempotency locks for safe manual retry.
-- `GET /pending`: Audit messages stuck in the worker pipeline.
+---
 
-## 11. Execution SLO Layer
-- **Ingestion Latency**: < 50ms (CRM to Redis).
-- **Orchestration Latency**: < 500ms (Redis to Skill Start).
-- **Retry Budget**: Max 3 attempts per skill with exponential backoff.
-- **Deduplication Window**: 24 hours per unique action.
+## 5. Policy Engine Rules
 
-## 12. Scaling Model
-- **Horizontal Scaling**: Simply spin up more worker instances with unique `workerId`s. Redis handles the load balancing across the `main_worker_group`.
-- **Statelessness**: Workers carry no local state; all context is rebuilt from the stream.
+| Rule | Condition | Action |
+|------|-----------|--------|
+| 1 | Saturday or Sunday | Block all outreach |
+| 2 | `loop_depth >= 5` | Block execution |
+| 3 | Missing `tenant_id` | Block execution |
+| 4 | Outreach skill + `do_not_outreach` status | Hard block (never contact) |
+| 4 | Outreach skill + `converted` status | Hard block (use CRM directly) |
+| 5 | Warm-only skill + cold lead | Block skill, allow email/SMS |
 
-## 13. Environment Setup
-Create a `.env` file with:
+---
+
+## 6. Execution Flow
+
+1. **Ingestion** — `/api/intake/lead` validates payload, checks idempotency, pushes to Redis Stream
+2. **Consumption** — Workers pull via `XREADGROUP` consumer groups
+3. **Classification** — Claude-3 extraction with 0.70 confidence threshold
+4. **Policy Check** — Deterministic rules run BEFORE LLM output acts
+5. **Execution Gate** — 8-stage safety validation
+6. **Prospect Check** — `check_prospect` before any outreach skill
+7. **Skill Execution** — SDK layer with exponential backoff retries
+8. **CRM Sync** — `crm_sync` skill notifies CRM via `/api/intake/sync` (HMAC-signed)
+9. **Finalization** — `XACK`, trace logged to ClickHouse
+
+---
+
+## 7. Environment Variables
+
 ```env
 REDIS_URL=redis://localhost:6379
 ANTHROPIC_API_KEY=your_key
+
+# CRM connection (for prospect sync)
+CRM_BASE_URL=https://your-crm-url.com
+AGENT_INTERNAL_TOKEN=your_token
+CRM_SYNC_URL=https://your-crm-url.com/api/intake/sync
+
+# Outreach SDKs
 RESEND_API_KEY=your_key
 TWILIO_ACCOUNT_SID=your_sid
 TWILIO_AUTH_TOKEN=your_token
+
+# Observability
 CLICKHOUSE_HOST=http://localhost:8123
+
+# Ports
+INGESTION_PORT=3000
+ADMIN_PORT=3001
 ```
 
-**Run Locally:**
-1. `docker-compose up -d`
-2. `npm install`
-3. `npx tsx index.ts`
+---
+
+## 8. Running Locally
+
+```bash
+docker-compose up -d      # Redis + ClickHouse
+npm install
+npx tsx index.ts          # Boot all services
+```
+
+---
+
+## 9. Admin Control Plane (Port 3001)
+
+| Endpoint | What |
+|----------|------|
+| `GET /status/:trace_id` | Check execution lifecycle state |
+| `POST /retry/:action_hash` | Reset idempotency for safe retry |
+| `GET /pending` | Audit messages stuck in worker pipeline |
+
+---
+
+## 10. Failure Recovery
+
+| Scenario | Detection | Recovery |
+|----------|-----------|----------|
+| Worker crash mid-execution | Redis PEL shows pending unacked message | `XCLAIM` by another worker; idempotency key blocks duplicate |
+| Redis failure | Ingestion returns 500 | Restart infra; stream is persisted (`APPENDONLY yes`) |
+| Skill API outage | Status `FAILED` in ClickHouse | Fix API, then `POST /retry/:action_hash` |
+
+---
+
+## 11. Scaling
+
+- **Horizontal:** Spin up more worker instances with unique `workerId`s — Redis handles load balancing
+- **Stateless workers:** All context rebuilt from stream — no shared local state
+- **Prospect store:** Redis SET NX ensures atomic dedup under concurrent writes
+
+---
+
+## 12. Changelog
+
+### v1.7 — May 10, 2026
+- **Prospect Store** (`services/prospect-store/`) — Redis-backed dedup layer with 90-day TTL, async CRM sync
+- **3 new skills:** `check_prospect`, `register_prospect`, `mark_do_not_outreach`
+- **Policy Engine Rule 4:** Hard blocks all outreach skills when prospect is `do_not_outreach` or `converted`
+- `CRM_BASE_URL` + `AGENT_INTERNAL_TOKEN` env vars added for CRM sync
+
+### v1.6 — prior
+- Warm lead gate (Rule 5 in Policy Engine)
+- Railway deployment
+- Redis error handler + retry strategy
