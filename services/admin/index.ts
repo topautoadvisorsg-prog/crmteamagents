@@ -117,6 +117,7 @@ app.get("/api/status/:trace_id", async (req, res) => {
 app.get("/api/executions", async (req, res) => {
   const limit = Math.min(parseInt(req.query.limit as string || "50"), 200);
   try {
+    if (!clickhouse) throw new Error("ClickHouse not configured");
     const rows = await clickhouse.query({
       query: `
         SELECT
