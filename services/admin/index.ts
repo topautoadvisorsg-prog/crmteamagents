@@ -15,7 +15,7 @@ app.use(express.json());
 const UI_DIST = path.join(__dirname, "../../ui/dist");
 app.use(express.static(UI_DIST));
 
-const PORT = process.env.ADMIN_PORT || 3001;
+const PORT = process.env.PORT || process.env.ADMIN_PORT || 3001;
 
 // ──────────────────────────────────────────────────────────────────────────────
 // HEALTH / METRICS
@@ -371,9 +371,17 @@ app.get("/api/prospects/export.csv", async (_req, res) => {
 });
 
 // ──────────────────────────────────────────────────────────────────────────────
-// SPA fallback — serve index.html for all non-API routes
+// HEALTH CHECK — required by Railway
 // ──────────────────────────────────────────────────────────────────────────────
-app.get("*", (req, res) => {
+app.get("/health", (_req, res) => {
+  res.json({ status: "ok", timestamp: new Date().toISOString() });
+});
+
+// ──────────────────────────────────────────────────────────────────────────────
+// SPA fallback — serve index.html for all non-API routes
+// Express 5 requires {*path} instead of * for wildcard routes
+// ──────────────────────────────────────────────────────────────────────────────
+app.get("/{*path}", (req, res) => {
   if (req.path.startsWith("/api/")) {
     return res.status(404).json({ error: "Not found" });
   }
