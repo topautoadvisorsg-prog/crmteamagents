@@ -2,6 +2,7 @@ import Anthropic from "@anthropic-ai/sdk";
 import dotenv from "dotenv";
 import { LLMClassification, ExecutionContext } from "../../types";
 import { LLMClassificationSchema } from "../../core/schemas";
+import { trackUsage } from "../token-tracker";
 
 dotenv.config();
 
@@ -9,13 +10,15 @@ const anthropic = new Anthropic({
   apiKey: process.env.ANTHROPIC_API_KEY || "dummy",
 });
 
+const MODEL = "claude-haiku-4-5-20251001";
+
 export class LLMClassifier {
   async classify(context: ExecutionContext): Promise<LLMClassification> {
     if (context.llm_calls_count >= 1) {
       throw new Error("Hard limit exceeded: max 1 LLM call per trace");
     }
 
-    const leadData = JSON.stringify(context.current_state);
+    const leadData    = JSON.stringify(context.current_state);
     const historyData = JSON.stringify(context.history.map(h => ({ type: h.type, payload: h.payload })));
 
     const prompt = `
@@ -39,13 +42,21 @@ export class LLMClassifier {
     `;
 
     const response = await anthropic.messages.create({
-      model: "claude-haiku-4-5-20251001",
+      model: MODEL,
       max_tokens: 500,
       messages: [{ role: "user", content: prompt }],
     });
 
+    // Track token usage — never discard this
+    const usage = response.usage;
+    await trackUsage({
+      model: MODEL,
+      inputTokens:  usage.input_tokens,
+      outputTokens: usage.output_tokens,
+    }).catch(() => {}); // non-fatal
+
     const content = response.content[0];
-    if (content.type !== 'text') {
+    if (content.type !== "text") {
       throw new Error("Invalid response from Claude");
     }
 

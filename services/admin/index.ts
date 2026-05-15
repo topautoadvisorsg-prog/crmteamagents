@@ -4,6 +4,9 @@ import { redis, getExecutionState, updateExecutionState, removeIdempotency, Exec
 import { clickhouse } from "../../infrastructure/clickhouse";
 import { listAllProspects, getProspectSummary } from "../prospect-store";
 import { listAllZips, resetZip, getTerritorySummary, markZipSearched } from "../territory";
+import { getDailyUsage, getMonthlyUsage, getAllTimeUsage, getDailyHistory } from "../token-tracker";
+import { getActivityFeed } from "../activity-feed";
+import { getDailyStats, getSkillStats } from "../stats";
 
 const app = express();
 app.use(express.json());
@@ -53,17 +56,40 @@ app.get("/api/metrics", async (_req, res) => {
       totalTracked: 0, exhausted: 0, available: 0, totalProspectsFound: 0,
     }));
 
+    // Worker heartbeats
+    const workerKeys = await redis.keys("worker:heartbeat:*").catch(() => [] as string[]);
+
+    // Today's usage
+    const todayUsage = await getDailyUsage().catch(() => ({ inputTokens: 0, outputTokens: 0, totalTokens: 0, calls: 0, costUSD: 0 }));
+
+    // Today's stats
+    const dailyStats = await getDailyStats().catch(() => ({
+      executions: 0, policy_blocked: 0, skill_success: 0, skill_fail: 0,
+      prospects_found: 0, emails_sent: 0, sms_sent: 0, calls_booked: 0,
+    }));
+
+    // System health: healthy if workers alive + PEL not overloaded
+    const isHealthy = workerKeys.length > 0 && pelCount < 10;
+    const health = workerKeys.length === 0 ? "offline" : pelCount >= 10 ? "degraded" : "healthy";
+
     res.json({
+      health,
       queue: {
         depth: streamLen,
         pelCount,
         consumerCount: consumers.length,
       },
+      workers: {
+        count: workerKeys.length,
+        alive: workerKeys.length > 0,
+      },
       executions: {
         tracked: execKeys.length,
       },
+      today: dailyStats,
       prospects: prospectSummary,
       territory: territorySummary,
+      usage: todayUsage,
       timestamp: new Date().toISOString(),
     });
   } catch (error) {
@@ -240,6 +266,106 @@ app.post("/api/territory/zip/:zip/reset", async (req, res) => {
     res.json({ success: true, zip, message: "Cooldown reset — ZIP is now available." });
   } catch (error) {
     res.status(500).json({ error: "Failed to reset ZIP", detail: String(error) });
+  }
+});
+
+// ──────────────────────────────────────────────────────────────────────────────
+// WORKER STATUS
+// ──────────────────────────────────────────────────────────────────────────────
+
+/**
+ * GET /api/workers
+ * Active workers based on heartbeat keys (TTL 60s — dead if missed)
+ */
+app.get("/api/workers", async (_req, res) => {
+  try {
+    const keys = await redis.keys("worker:heartbeat:*");
+    if (!keys.length) return res.json({ workers: [], count: 0, healthy: false });
+
+    const pipeline = redis.pipeline();
+    for (const k of keys) pipeline.get(k);
+    const results = await pipeline.exec();
+
+    const workers = (results ?? [])
+      .map(([, v]) => { try { return v ? JSON.parse(v as string) : null; } catch { return null; } })
+      .filter(Boolean);
+
+    res.json({ workers, count: workers.length, healthy: workers.length > 0 });
+  } catch (error) {
+    res.status(500).json({ error: "Failed to fetch workers", detail: String(error) });
+  }
+});
+
+// ──────────────────────────────────────────────────────────────────────────────
+// ACTIVITY FEED
+// ──────────────────────────────────────────────────────────────────────────────
+
+/** GET /api/activity — last N events from the live feed */
+app.get("/api/activity", async (req, res) => {
+  const limit = Math.min(parseInt(req.query.limit as string || "50"), 200);
+  try {
+    const events = await getActivityFeed(limit);
+    res.json({ events, count: events.length });
+  } catch (error) {
+    res.status(500).json({ error: "Failed to fetch activity", detail: String(error) });
+  }
+});
+
+// ──────────────────────────────────────────────────────────────────────────────
+// TOKEN USAGE & COST
+// ──────────────────────────────────────────────────────────────────────────────
+
+/** GET /api/usage — Anthropic API token usage + cost estimate */
+app.get("/api/usage", async (_req, res) => {
+  try {
+    const [today, month, allTime, history] = await Promise.all([
+      getDailyUsage(),
+      getMonthlyUsage(),
+      getAllTimeUsage(),
+      getDailyHistory(),
+    ]);
+    res.json({ today, month, allTime, history });
+  } catch (error) {
+    res.status(500).json({ error: "Failed to fetch usage", detail: String(error) });
+  }
+});
+
+// ──────────────────────────────────────────────────────────────────────────────
+// ANALYTICS — throughput + skill breakdown
+// ──────────────────────────────────────────────────────────────────────────────
+
+/** GET /api/analytics — daily stats + skill breakdown */
+app.get("/api/analytics", async (_req, res) => {
+  try {
+    const [daily, skills] = await Promise.all([getDailyStats(), getSkillStats()]);
+    const successRate = (daily.skill_success + daily.skill_fail) > 0
+      ? Math.round((daily.skill_success / (daily.skill_success + daily.skill_fail)) * 100)
+      : 0;
+    res.json({ daily, skills, successRate });
+  } catch (error) {
+    res.status(500).json({ error: "Failed to fetch analytics", detail: String(error) });
+  }
+});
+
+// ──────────────────────────────────────────────────────────────────────────────
+// PROSPECT CSV EXPORT
+// ──────────────────────────────────────────────────────────────────────────────
+
+/** GET /api/prospects/export.csv */
+app.get("/api/prospects/export.csv", async (_req, res) => {
+  try {
+    const prospects = await listAllProspects();
+    const header = "id,name,company,phone,email,source,agentId,status,notes,createdAt,updatedAt";
+    const rows = prospects.map(p =>
+      [p.id, p.name, p.company, p.phone, p.email, p.source, p.agentId, p.status, p.notes, p.createdAt, p.updatedAt]
+        .map(v => (v == null ? "" : `"${String(v).replace(/"/g, '""')}"`) )
+        .join(",")
+    );
+    res.setHeader("Content-Type", "text/csv");
+    res.setHeader("Content-Disposition", `attachment; filename="prospects-${new Date().toISOString().slice(0,10)}.csv"`);
+    res.send([header, ...rows].join("\n"));
+  } catch (error) {
+    res.status(500).json({ error: "Failed to export", detail: String(error) });
   }
 });
 

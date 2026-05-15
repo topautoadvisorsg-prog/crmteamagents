@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { Search, Users, RefreshCw, Phone, Mail, Building2, Ban, CheckCircle2, Clock, AlertCircle } from "lucide-react";
+import { Search, Users, RefreshCw, Phone, Mail, Building2, Download } from "lucide-react";
 import { formatDistanceToNow, parseISO } from "date-fns";
 import clsx from "clsx";
 
@@ -59,11 +59,21 @@ export default function Prospects() {
   return (
     <div className="p-8 space-y-6">
       {/* Header */}
-      <div>
-        <h1 className="text-2xl font-black">Prospect Pool</h1>
-        <p className="text-sm text-gray-500 mt-1">
-          Leads found by agents — Redis dedup store. {data?.total ?? 0} total.
-        </p>
+      <div className="flex items-center justify-between">
+        <div>
+          <h1 className="text-2xl font-black">Prospect Pool</h1>
+          <p className="text-sm text-gray-500 mt-1">
+            Leads found by agents — Redis dedup store. {data?.total ?? 0} total.
+          </p>
+        </div>
+        <a
+          href="/api/prospects/export.csv"
+          download
+          className="flex items-center gap-2 px-4 py-2 bg-gray-800 hover:bg-gray-700 border border-gray-700 text-gray-300 text-sm font-semibold rounded-lg transition-colors"
+        >
+          <Download className="w-4 h-4" />
+          Export CSV
+        </a>
       </div>
 
       {/* Filters */}
