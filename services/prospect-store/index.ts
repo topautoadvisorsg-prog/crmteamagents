@@ -235,6 +235,39 @@ async function _syncToCRM(p: Prospect, metadata?: Record<string, unknown>): Prom
 }
 
 // ──────────────────────────────────────────────
+// LIST ALL — for admin UI
+// ──────────────────────────────────────────────
+export async function listAllProspects(): Promise<Prospect[]> {
+  const keys = await redis.keys("prospect:id:*");
+  if (!keys.length) return [];
+
+  const pipeline = redis.pipeline();
+  for (const key of keys) pipeline.get(key);
+  const results = await pipeline.exec();
+  if (!results) return [];
+
+  const prospects: Prospect[] = [];
+  for (const [err, val] of results) {
+    if (!err && val && typeof val === "string") {
+      try { prospects.push(JSON.parse(val)); } catch {}
+    }
+  }
+  return prospects.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+}
+
+export async function getProspectSummary(): Promise<Record<string, number>> {
+  const prospects = await listAllProspects();
+  const summary: Record<string, number> = {
+    total: prospects.length,
+    new: 0, outreached: 0, responded: 0, converted: 0, do_not_outreach: 0,
+  };
+  for (const p of prospects) {
+    if (summary[p.status] !== undefined) summary[p.status]++;
+  }
+  return summary;
+}
+
+// ──────────────────────────────────────────────
 // INTERNAL — sync status update to CRM
 // ──────────────────────────────────────────────
 async function _syncStatusToCRM(p: Prospect): Promise<void> {

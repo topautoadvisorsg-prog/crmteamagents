@@ -7,7 +7,7 @@ import "./services/admin";
 import "./services/execute"; // CRM-approved action execution gateway
 
 async function bootstrap() {
-  console.log("AI Lead Execution Control Plane (V1.6) Booting...");
+  console.log("AI Lead Execution Control Plane (V1.7) Booting...");
 
   // 1. Initialize Redis Streams and Consumer Groups
   await initInfrastructure();
