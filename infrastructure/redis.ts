@@ -6,16 +6,25 @@ dotenv.config();
 const REDIS_URL = process.env.REDIS_URL || "redis://localhost:6379";
 
 export const redis = new Redis(REDIS_URL, {
-  maxRetriesPerRequest: 3,      // never hang forever — fail fast after 3 tries
+  // null = never throw MaxRetriesPerRequestError — commands wait for reconnect
+  // This prevents the process from crashing when Redis is temporarily unreachable.
+  // Individual commands are still protected by withTimeout() in the admin API.
+  maxRetriesPerRequest: null,
   enableReadyCheck: false,
-  connectTimeout: 5000,         // 5s to establish connection, then throw
-  lazyConnect: false,
+  connectTimeout: 8000,
+  // lazyConnect: don't throw on construction if URL is wrong.
+  // initInfrastructure() will surface the error on first command.
+  lazyConnect: true,
   retryStrategy(times) {
-    if (times > 5) {
-      console.error("[Redis] Max reconnection attempts reached. Giving up.");
-      return null;              // stop retrying, let the error surface
+    if (times > 10) {
+      // After 10 attempts give up reconnecting — Redis is likely misconfigured.
+      // The process stays alive; commands will just fail gracefully.
+      console.error(`[Redis] Gave up reconnecting after ${times} attempts. Check REDIS_URL.`);
+      return null;
     }
-    return Math.min(times * 500, 3000);
+    const delay = Math.min(times * 500, 5000);
+    console.log(`[Redis] Reconnect attempt ${times} in ${delay}ms…`);
+    return delay;
   },
 });
 
@@ -40,6 +49,10 @@ export enum ExecutionState {
 }
 
 export async function initInfrastructure() {
+  // With lazyConnect:true we must explicitly connect before first command
+  if (redis.status === "wait") {
+    await redis.connect();
+  }
   try {
     await redis.xgroup("CREATE", STREAMS.EVENTS, GROUPS.MAIN_WORKER_GROUP, "$", "MKSTREAM");
   } catch (e: any) {
