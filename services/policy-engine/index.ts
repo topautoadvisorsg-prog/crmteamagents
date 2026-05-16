@@ -15,9 +15,11 @@ export class PolicyEngine {
     const lead = context.current_state;
 
     // Rule 1: No outreach on weekends
+    // Override with DISABLE_WEEKEND_POLICY=true for testing / markets that run 7 days
     const today = new Date().getDay();
-    if (today === 0 || today === 6) {
-      return { allow: false, reason: "Outreach blocked: Weekend policy enforced" };
+    const weekendPolicyEnabled = process.env.DISABLE_WEEKEND_POLICY !== "true";
+    if (weekendPolicyEnabled && (today === 0 || today === 6)) {
+      return { allow: false, reason: "Outreach blocked: Weekend policy enforced (set DISABLE_WEEKEND_POLICY=true to override)" };
     }
 
     // Rule 2: Max loop depth guard

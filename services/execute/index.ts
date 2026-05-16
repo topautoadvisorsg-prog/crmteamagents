@@ -1,20 +1,18 @@
-import express from "express";
+import { Router } from "express";
 import axios from "axios";
 import { SKILL_REGISTRY } from "../skill-router/registry";
 import dotenv from "dotenv";
 
 dotenv.config();
 
-const app = express();
-app.use(express.json());
-
-const PORT = process.env.PORT || process.env.EXECUTE_PORT || 3002;
 const WEBHOOK_SECRET = process.env.AGENT_WEBHOOK_SECRET || "";
 const CRM_CALLBACK_URL = process.env.CRM_CALLBACK_URL || "http://localhost:5000/api/agent/callback";
 
-// ─── Auth ────────────────────────────────────────────────────────────────────
+const router = Router();
 
-function validateSecret(req: express.Request, res: express.Response): boolean {
+// ─── Auth ─────────────────────────────────────────────────────────────────────
+
+function validateSecret(req: any, res: any): boolean {
   const provided = req.headers["x-webhook-secret"] as string;
   if (!WEBHOOK_SECRET || provided !== WEBHOOK_SECRET) {
     res.status(401).json({ status: "error", message: "Unauthorized" });
@@ -23,7 +21,7 @@ function validateSecret(req: express.Request, res: express.Response): boolean {
   return true;
 }
 
-// ─── Callback to CRM ─────────────────────────────────────────────────────────
+// ─── Callback to CRM ──────────────────────────────────────────────────────────
 
 async function callbackToCRM(
   proposalId: string,
@@ -49,27 +47,16 @@ async function callbackToCRM(
   }
 }
 
-// ─── Health ───────────────────────────────────────────────────────────────────
-
-app.get("/health", (_req, res) => {
-  res.json({ status: "ok", service: "execute", port: PORT, timestamp: new Date().toISOString() });
-});
-
 // ─── POST /execute/email ──────────────────────────────────────────────────────
-// CRM payload: { correlationId, proposalId?, type:"email", to, subject, body }
 
-app.post("/execute/email", async (req: express.Request, res: express.Response) => {
+router.post("/execute/email", async (req: any, res: any) => {
   if (!validateSecret(req, res)) return;
-
   const { correlationId, proposalId, to, subject, body } = req.body as Record<string, string>;
-
   if (!correlationId || !to || !subject || !body) {
     res.status(400).json({ status: "error", message: "Missing required fields: correlationId, to, subject, body" });
     return;
   }
-
   res.status(202).json({ status: "accepted", correlationId });
-
   try {
     const result = await SKILL_REGISTRY.send_email.execute({ to, subject, body });
     await callbackToCRM(proposalId || correlationId, correlationId, "completed", result);
@@ -80,20 +67,15 @@ app.post("/execute/email", async (req: express.Request, res: express.Response) =
 });
 
 // ─── POST /execute/whatsapp ───────────────────────────────────────────────────
-// CRM payload: { correlationId, proposalId?, type:"whatsapp", phoneNumber, message }
 
-app.post("/execute/whatsapp", async (req: express.Request, res: express.Response) => {
+router.post("/execute/whatsapp", async (req: any, res: any) => {
   if (!validateSecret(req, res)) return;
-
   const { correlationId, proposalId, phoneNumber, message } = req.body as Record<string, string>;
-
   if (!correlationId || !phoneNumber || !message) {
     res.status(400).json({ status: "error", message: "Missing required fields: correlationId, phoneNumber, message" });
     return;
   }
-
   res.status(202).json({ status: "accepted", correlationId });
-
   try {
     const result = await SKILL_REGISTRY.send_sms.execute({ to: phoneNumber, message });
     await callbackToCRM(proposalId || correlationId, correlationId, "completed", result);
@@ -104,31 +86,24 @@ app.post("/execute/whatsapp", async (req: express.Request, res: express.Response
 });
 
 // ─── POST /execute/task ───────────────────────────────────────────────────────
-// CRM payload: { correlationId, proposalId?, type:"task", actions:[{tool, args}] }
 
-app.post("/execute/task", async (req: express.Request, res: express.Response) => {
+router.post("/execute/task", async (req: any, res: any) => {
   if (!validateSecret(req, res)) return;
-
   const { correlationId, proposalId, actions } = req.body as {
     correlationId: string;
     proposalId?: string;
     actions: Array<{ tool: string; args: Record<string, unknown> }>;
   };
-
   if (!correlationId || !Array.isArray(actions) || actions.length === 0) {
     res.status(400).json({ status: "error", message: "Missing required fields: correlationId, actions[]" });
     return;
   }
-
   res.status(202).json({ status: "accepted", correlationId, actionCount: actions.length });
-
   const results: Array<{ tool: string; status: string; result?: unknown; error?: string }> = [];
-
   for (const action of actions) {
     const skill = SKILL_REGISTRY[action.tool];
     if (!skill) {
       results.push({ tool: action.tool, status: "skipped", error: `Unknown skill: ${action.tool}` });
-      console.warn(`[Execute/task] Unknown skill: ${action.tool}`);
       continue;
     }
     try {
@@ -136,13 +111,10 @@ app.post("/execute/task", async (req: express.Request, res: express.Response) =>
       results.push({ tool: action.tool, status: "completed", result });
     } catch (err: any) {
       results.push({ tool: action.tool, status: "failed", error: err.message });
-      console.error(`[Execute/task] Skill ${action.tool} failed:`, err.message);
     }
   }
-
   const overallStatus = results.some(r => r.status === "failed") ? "failed" : "completed";
   const pid = proposalId || correlationId;
-
   if (overallStatus === "completed") {
     await callbackToCRM(pid, correlationId, "completed", { results });
   } else {
@@ -152,46 +124,23 @@ app.post("/execute/task", async (req: express.Request, res: express.Response) =>
 });
 
 // ─── POST /execute/payment ────────────────────────────────────────────────────
-// CRM payload: { correlationId, proposalId?, type:"payment", amount, currency, description, contactId }
 
-app.post("/execute/payment", async (req: express.Request, res: express.Response) => {
+router.post("/execute/payment", async (req: any, res: any) => {
   if (!validateSecret(req, res)) return;
-
-  const { correlationId, proposalId, amount, currency, description, contactId } = req.body as Record<string, string>;
-
+  const { correlationId, proposalId, amount } = req.body as Record<string, string>;
   if (!correlationId || !amount) {
     res.status(400).json({ status: "error", message: "Missing required fields: correlationId, amount" });
     return;
   }
-
   res.status(202).json({ status: "accepted", correlationId });
-
   if (!process.env.STRIPE_SECRET_KEY) {
-    console.warn(`[Execute/payment] STRIPE_SECRET_KEY not set. Rejecting payment request for ${correlationId}.`);
-    await callbackToCRM(
-      proposalId || correlationId,
-      correlationId,
-      "failed",
-      undefined,
-      "Stripe not configured — set STRIPE_SECRET_KEY to enable payment execution"
-    );
+    console.warn(`[Execute/payment] STRIPE_SECRET_KEY not set. Rejecting ${correlationId}.`);
+    await callbackToCRM(proposalId || correlationId, correlationId, "failed", undefined,
+      "Stripe not configured — set STRIPE_SECRET_KEY to enable payment execution");
     return;
   }
-
-  // TODO: implement Stripe payment link creation with stripe npm package
-  console.warn(`[Execute/payment] Stripe configured but not yet implemented for ${correlationId}.`);
-  await callbackToCRM(
-    proposalId || correlationId,
-    correlationId,
-    "failed",
-    undefined,
-    "Payment execution not yet implemented"
-  );
+  await callbackToCRM(proposalId || correlationId, correlationId, "failed", undefined,
+    "Payment execution not yet implemented");
 });
 
-// ─── Boot ─────────────────────────────────────────────────────────────────────
-
-app.listen(PORT, () => {
-  console.log(`Execute Service running on port ${PORT}`);
-  console.log(`Callback URL: ${CRM_CALLBACK_URL}`);
-});
+export default router;

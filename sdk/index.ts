@@ -15,13 +15,15 @@ export class ResendSDK {
       return { id: "mock_res_" + Date.now(), status: "simulated" };
     }
 
+    const fromAddress = process.env.RESEND_FROM_EMAIL || "SmartKlix <noreply@resend.dev>";
     const response = await axios.post("https://api.resend.com/emails", {
-      from: "AI Control Plane <onboarding@resend.dev>",
+      from: fromAddress,
       to: [to],
       subject,
       html: body,
     }, {
-      headers: { Authorization: `Bearer ${this.apiKey}` }
+      headers: { Authorization: `Bearer ${this.apiKey}` },
+      timeout: 10000,
     });
     
     return response.data;

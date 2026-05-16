@@ -77,7 +77,7 @@ async function processEvent(event: BusinessEvent) {
           message: `Policy blocked: ${policyDecision.reason}`,
           meta: { trace_id, reason: policyDecision.reason },
         });
-        await logStep(trace_id, "policy_engine", "fail", Date.now() - startTime, policyDecision.reason);
+        await logStep(trace_id, "policy_engine", "fail", Date.now() - startTime, policyDecision.reason, { tenant_id: event.metadata.tenant_id });
         return;
       }
 
@@ -113,7 +113,7 @@ async function processEvent(event: BusinessEvent) {
           message: `Execution gate blocked: ${gateResult.reason}`,
           meta: { trace_id, skill: classification.action },
         });
-        await logStep(trace_id, "execution_gate", "fail", Date.now() - startTime, gateResult.reason);
+        await logStep(trace_id, "execution_gate", "fail", Date.now() - startTime, gateResult.reason, { skill: classification.action, tenant_id: event.metadata.tenant_id });
         return;
       }
 
@@ -169,7 +169,7 @@ async function processEvent(event: BusinessEvent) {
         };
 
         await pushToStream(STREAMS.EVENTS, completionEvent);
-        await logStep(trace_id, "skill_execution", "ok", Date.now() - startTime);
+        await logStep(trace_id, "skill_execution", "ok", Date.now() - startTime, undefined, { skill: classification.action, tenant_id: event.metadata.tenant_id });
 
       } catch (skillError: any) {
         await updateExecutionState(actionHash, ExecutionState.FAILED);
@@ -184,7 +184,7 @@ async function processEvent(event: BusinessEvent) {
         });
 
         console.error(`[Orchestrator] Skill execution failed after retries: ${skillError.message}`);
-        await logStep(trace_id, "skill_execution", "fail", Date.now() - startTime, skillError.message);
+        await logStep(trace_id, "skill_execution", "fail", Date.now() - startTime, skillError.message, { skill: classification.action, tenant_id: event.metadata.tenant_id });
       }
     }
 
@@ -202,7 +202,14 @@ async function processEvent(event: BusinessEvent) {
 // ──────────────────────────────────────────────────────────────────────────────
 // LOG STEP
 // ──────────────────────────────────────────────────────────────────────────────
-async function logStep(trace_id: string, step: string, status: "ok" | "fail", latency: number, error?: string) {
+async function logStep(
+  trace_id: string,
+  step: string,
+  status: "ok" | "fail",
+  latency: number,
+  error?: string,
+  extra?: Record<string, any>
+) {
   const log = {
     trace_id,
     span_id: crypto.randomUUID(),
@@ -211,9 +218,26 @@ async function logStep(trace_id: string, step: string, status: "ok" | "fail", la
     latency_ms: latency,
     error,
     timestamp: new Date().toISOString(),
+    ...extra,
   };
   await pushToStream(STREAMS.LOGS, log);
   await logToClickHouse(log);
+
+  // Write exec:state:* so the admin UI can find recent traces
+  await redis.set(
+    `exec:state:${trace_id}`,
+    JSON.stringify({
+      trace_id,
+      skill: extra?.skill ?? step,
+      status: status === "ok" ? "completed" : "failed",
+      policy_decision: status === "ok" ? "allow" : "block",
+      policy_reason: error ?? undefined,
+      timestamp: log.timestamp,
+      tenant_id: extra?.tenant_id ?? undefined,
+    }),
+    "EX",
+    86400 * 7  // keep 7 days
+  ).catch(() => {});
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
@@ -252,9 +276,10 @@ export async function startOrchestrator(workerId: string = `worker-${crypto.rand
 
   while (true) {
     try {
+      // BLOCK 5000 (not 0) — prevents infinite hang when Redis connection drops
       const results = await (redis as any).xreadgroup(
         "GROUP", GROUPS.MAIN_WORKER_GROUP, workerId,
-        "BLOCK", 0,
+        "BLOCK", 5000,
         "COUNT", 1,
         "STREAMS", STREAMS.EVENTS, ">"
       ) as Array<[string, Array<[string, string[]]>]> | null;

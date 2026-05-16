@@ -22,24 +22,39 @@ export class LLMClassifier {
     const historyData = JSON.stringify(context.history.map(h => ({ type: h.type, payload: h.payload })));
 
     const prompt = `
-      You are an intent classifier for a lead execution system.
-      Current Lead Data: ${leadData}
-      Event History: ${historyData}
+You are an intent classifier for an AI lead execution system.
 
-      Classify the intent into one of: outreach, scoring, booking, enrichment.
-      Determine the specific action to take.
-      Provide a confidence score between 0 and 1.
-      Provide a short reasoning.
+Current Lead Data: ${leadData}
+Event History: ${historyData}
 
-      OUTPUT ONLY VALID JSON IN THIS FORMAT:
-      {
-        "intent": "outreach" | "scoring" | "booking" | "enrichment",
-        "action": "string",
-        "confidence": number,
-        "reasoning_short": "string",
-        "schema_version": "v1.0"
-      }
-    `;
+Your job: decide what action to take next for this lead.
+
+AVAILABLE ACTIONS (you must pick exactly one of these):
+- register_prospect  → lead is new and not yet in our system (always do this first)
+- check_prospect     → verify if this lead already exists before outreach
+- send_email         → send an outreach email (requires email address)
+- send_sms           → send an outreach SMS (requires phone number)
+- book_call          → schedule a call (only if lead responded/is warm)
+- scrape_site        → enrich lead by scraping their website
+- mark_do_not_outreach → lead opted out or asked to stop contact
+- crm_sync           → sync completed lead data to CRM
+
+DECISION RULES:
+1. If history is empty or has no "action_completed" events → action must be "register_prospect"
+2. If already registered but no outreach yet → action is "send_email" or "send_sms" based on available contact info
+3. If lead has replied / status is warm → action is "book_call"
+4. If lead asked to stop → action is "mark_do_not_outreach"
+5. For enrichment tasks → action is "scrape_site"
+
+OUTPUT ONLY VALID JSON (no markdown, no explanation):
+{
+  "intent": "outreach" | "scoring" | "booking" | "enrichment",
+  "action": "<one of the AVAILABLE ACTIONS above>",
+  "confidence": <number 0-1>,
+  "reasoning_short": "<one sentence>",
+  "schema_version": "v1.0"
+}
+`;
 
     const response = await anthropic.messages.create({
       model: MODEL,

@@ -6,14 +6,16 @@ dotenv.config();
 const REDIS_URL = process.env.REDIS_URL || "redis://localhost:6379";
 
 export const redis = new Redis(REDIS_URL, {
-  maxRetriesPerRequest: null,
+  maxRetriesPerRequest: 3,      // never hang forever — fail fast after 3 tries
   enableReadyCheck: false,
+  connectTimeout: 5000,         // 5s to establish connection, then throw
+  lazyConnect: false,
   retryStrategy(times) {
-    if (times > 10) {
+    if (times > 5) {
       console.error("[Redis] Max reconnection attempts reached. Giving up.");
-      return null;
+      return null;              // stop retrying, let the error surface
     }
-    return Math.min(times * 500, 5000);
+    return Math.min(times * 500, 3000);
   },
 });
 

@@ -65,9 +65,12 @@ export default function Analytics() {
 
   return (
     <div className="p-8 space-y-6">
-      <div>
-        <h1 className="text-2xl font-black">Analytics</h1>
-        <p className="text-sm text-gray-500 mt-1">Token usage, cost, and skill performance</p>
+      <div className="flex items-center justify-between">
+        <div>
+          <h1 className="text-2xl font-black">Analytics</h1>
+          <p className="text-sm text-gray-500 mt-1">Token usage, cost, and skill performance</p>
+        </div>
+        <a href="/settings" className="text-xs text-gray-500 hover:text-gray-300">Adjust pricing in Settings →</a>
       </div>
 
       {isLoading ? (
@@ -199,9 +202,8 @@ export default function Analytics() {
           {/* Pricing note */}
           <div className="text-[11px] text-gray-600 flex items-center gap-2">
             <DollarSign className="w-3 h-3" />
-            Cost estimates based on claude-haiku-4-5 pricing: $0.80/M input · $4.00/M output.
-            Override via <code className="bg-gray-800 px-1 rounded">TOKEN_COST_INPUT_PER_M</code> /
-            <code className="bg-gray-800 px-1 rounded">TOKEN_COST_OUTPUT_PER_M</code> env vars.
+            Cost estimates based on claude-haiku-4-5 pricing ($0.80/M input · $4.00/M output).
+            Adjust pricing in Settings if you change models.
           </div>
         </>
       )}

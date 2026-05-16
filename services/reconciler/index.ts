@@ -40,13 +40,23 @@ export class ReconciliationService {
           // For now, if we can't determine the specific action lock, we log for manual intervention.
           
           if (deliveries > 5) {
-            console.error(`[Reconciler] Poison pill detected for message ${id}. Moving to Dead Letter logic.`);
-            // In a real system, we'd XADD to a DLQ and XACK here.
+            // Poison pill — ACK and move on to prevent infinite retry loop
+            console.error(`[Reconciler] Poison pill (${deliveries} deliveries) for ${id}. ACKing to unblock queue.`);
             await redis.xack(STREAMS.EVENTS, GROUPS.MAIN_WORKER_GROUP, id);
           } else {
-            console.log(`[Reconciler] Attempting to re-claim message ${id} for re-processing.`);
-            // XCLAIM allows another worker to take it. The orchestrator will then re-run it.
-            // Since ExecutionGate/reserveIdempotency handles the locking, it's safe.
+            // XCLAIM — transfer ownership to "reconciler" so any idle worker can pick it up
+            console.log(`[Reconciler] Reclaiming stuck message ${id} after ${Math.round(idleTime / 1000)}s idle.`);
+            try {
+              await (redis as any).xclaim(
+                STREAMS.EVENTS,
+                GROUPS.MAIN_WORKER_GROUP,
+                "reconciler",       // claim under this consumer name
+                this.pendingTimeoutMs, // min-idle-time must match
+                id
+              );
+            } catch (claimErr: any) {
+              console.error(`[Reconciler] XCLAIM failed for ${id}: ${claimErr.message}`);
+            }
           }
         }
       }

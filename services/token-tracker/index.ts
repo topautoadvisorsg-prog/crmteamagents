@@ -43,7 +43,7 @@ export async function trackUsage(params: {
   for (const key of [todayKey(), monthKey(), allTimeKey()]) {
     pipeline.hincrbyfloat(key, "inputTokens",  inputTokens);
     pipeline.hincrbyfloat(key, "outputTokens", outputTokens);
-    pipeline.hincrbyfloat(key, "calls",        1);
+    pipeline.hincrby(key, "calls",  1);           // integer, not float
     pipeline.hincrbyfloat(key, "costUSD",      cost);
   }
   // Day key expires after 35 days; month key after 400 days

@@ -86,32 +86,34 @@ export async function isZipAvailable(zip: string): Promise<boolean> {
 
 /**
  * List all tracked ZIP codes with their current status.
+ * Uses a single pipeline — no N+1 TTL calls.
  */
 export async function listAllZips(): Promise<ZipRecord[]> {
   const keys = await redis.keys(`${KEY_PREFIX}*`);
   if (!keys.length) return [];
 
+  // Batch GET and TTL in one pipeline
   const pipeline = redis.pipeline();
   for (const key of keys) {
     pipeline.get(key);
+    pipeline.ttl(key);
   }
   const results = await pipeline.exec();
   if (!results) return [];
 
   const zips: ZipRecord[] = [];
-  for (const [err, val] of results) {
-    if (!err && val && typeof val === "string") {
-      try {
-        const record = JSON.parse(val) as ZipRecord;
-        // Re-derive TTL to get remaining cooldown
-        const ttl = await redis.ttl(zipKey(record.zip));
-        const remainingDays = ttl > 0 ? Math.ceil(ttl / 86400) : 0;
-        zips.push({
-          ...record,
-          status: ttl > 0 ? "exhausted" : "available",
-        });
-      } catch {}
-    }
+  for (let i = 0; i < results.length; i += 2) {
+    const [errGet, val] = results[i];
+    const [, ttlRaw]    = results[i + 1];
+    if (errGet || !val || typeof val !== "string") continue;
+    try {
+      const record = JSON.parse(val) as ZipRecord;
+      const ttl = (ttlRaw as number) ?? -1;
+      zips.push({
+        ...record,
+        status: ttl > 0 ? "exhausted" : "available",
+      });
+    } catch {}
   }
 
   return zips.sort((a, b) => new Date(b.lastSearched).getTime() - new Date(a.lastSearched).getTime());

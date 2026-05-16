@@ -6,6 +6,7 @@
  */
 
 import { redis } from "../../infrastructure/redis";
+import crypto from "crypto";
 
 const FEED_KEY   = "activity:feed";
 const MAX_EVENTS = 200;
@@ -23,7 +24,7 @@ export interface ActivityEvent {
 
 export async function pushActivity(params: Omit<ActivityEvent, "id" | "timestamp">): Promise<void> {
   const event: ActivityEvent = {
-    id: Math.random().toString(36).slice(2),
+    id: crypto.randomUUID(),
     timestamp: new Date().toISOString(),
     ...params,
   };

@@ -1,15 +1,46 @@
 import express from "express";
 import path from "path";
-import { redis, getExecutionState, updateExecutionState, removeIdempotency, ExecutionState, STREAMS, GROUPS } from "../../infrastructure/redis";
+import { redis, getExecutionState, removeIdempotency, ExecutionState, STREAMS, GROUPS, pushToStream } from "../../infrastructure/redis";
 import { clickhouse } from "../../infrastructure/clickhouse";
-import { listAllProspects, getProspectSummary } from "../prospect-store";
+import { listAllProspects, getProspectSummary, updateProspectStatus } from "../prospect-store";
 import { listAllZips, resetZip, getTerritorySummary, markZipSearched } from "../territory";
 import { getDailyUsage, getMonthlyUsage, getAllTimeUsage, getDailyHistory } from "../token-tracker";
 import { getActivityFeed } from "../activity-feed";
 import { getDailyStats, getSkillStats } from "../stats";
+import { listAgents, getAgent, createAgent, updateAgent, deleteAgent, setAgentStatus, getDefaultAgentTemplate } from "../agent-config";
+import ingestionRouter from "../ingestion";
+import executeRouter from "../execute";
+import { v4 as uuidv4 } from "uuid";
 
 const app = express();
 app.use(express.json());
+
+// ── Single server — all routers on Railway's one PORT ──
+app.use(ingestionRouter);
+app.use(executeRouter);
+
+// ── Admin API auth — simple static token, skip for health check and SPA ──
+// Set ADMIN_TOKEN env var to enable auth. If not set, admin is open (dev mode).
+const ADMIN_TOKEN = process.env.ADMIN_TOKEN || "";
+app.use("/api", (req, res, next) => {
+  // Health check and /api/intake routes skip admin auth
+  if (req.path === "/metrics" && req.method === "GET") return next(); // allow sidebar health dot
+  if (ADMIN_TOKEN && req.path !== "/health") {
+    const provided = req.headers["x-admin-token"] as string || req.headers["authorization"]?.replace("Bearer ", "") || "";
+    if (provided !== ADMIN_TOKEN) {
+      return res.status(401).json({ error: "Unauthorized — set x-admin-token header" });
+    }
+  }
+  next();
+});
+
+// ── Utility: race any promise against a timeout so Redis can never hang the UI ──
+function withTimeout<T>(promise: Promise<T>, ms: number, fallback: T): Promise<T> {
+  return Promise.race([
+    promise,
+    new Promise<T>((resolve) => setTimeout(() => resolve(fallback), ms)),
+  ]);
+}
 
 // Serve built UI static files (production)
 const UI_DIST = path.join(__dirname, "../../ui/dist");
@@ -27,43 +58,63 @@ const PORT = process.env.PORT || process.env.ADMIN_PORT || 3001;
  */
 app.get("/api/metrics", async (_req, res) => {
   try {
+    const T = 4_500; // 4.5s timeout — always respond before Railway's 30s healthcheck
+
     // Queue depth
-    const streamLen = await redis.xlen(STREAMS.EVENTS).catch(() => 0);
+    const streamLen = await withTimeout(redis.xlen(STREAMS.EVENTS), T, 0).catch(() => 0);
 
     // PEL (stuck messages)
     let pelCount = 0;
     try {
-      const pending = await redis.xpending(STREAMS.EVENTS, GROUPS.MAIN_WORKER_GROUP, "-", "+", 100) as any[];
+      const pending = await withTimeout(
+        redis.xpending(STREAMS.EVENTS, GROUPS.MAIN_WORKER_GROUP, "-", "+", 100) as Promise<any[]>,
+        T, []
+      );
       pelCount = Array.isArray(pending) ? pending.length : 0;
     } catch {}
 
     // Consumer group info
     let consumers: any[] = [];
     try {
-      consumers = await redis.xinfo("CONSUMERS", STREAMS.EVENTS, GROUPS.MAIN_WORKER_GROUP) as any[];
+      consumers = await withTimeout(
+        redis.xinfo("CONSUMERS", STREAMS.EVENTS, GROUPS.MAIN_WORKER_GROUP) as Promise<any[]>,
+        T, []
+      );
     } catch {}
 
-    // Recent executions count (last 24h) from Redis keys
-    const execKeys = await redis.keys("exec:state:*").catch(() => [] as string[]);
+    // Recent executions count from Redis keys
+    const execKeys = await withTimeout(redis.keys("exec:state:*"), T, [] as string[]).catch(() => [] as string[]);
 
     // Prospect summary
-    const prospectSummary = await getProspectSummary().catch(() => ({
-      total: 0, new: 0, outreached: 0, responded: 0, converted: 0, do_not_outreach: 0,
-    }));
+    const prospectSummary = await withTimeout(
+      getProspectSummary(),
+      T,
+      { total: 0, new: 0, outreached: 0, responded: 0, converted: 0, do_not_outreach: 0 }
+    ).catch(() => ({ total: 0, new: 0, outreached: 0, responded: 0, converted: 0, do_not_outreach: 0 }));
 
     // Territory summary
-    const territorySummary = await getTerritorySummary().catch(() => ({
-      totalTracked: 0, exhausted: 0, available: 0, totalProspectsFound: 0,
-    }));
+    const territorySummary = await withTimeout(
+      getTerritorySummary(),
+      T,
+      { totalTracked: 0, exhausted: 0, available: 0, totalProspectsFound: 0 }
+    ).catch(() => ({ totalTracked: 0, exhausted: 0, available: 0, totalProspectsFound: 0 }));
 
     // Worker heartbeats
-    const workerKeys = await redis.keys("worker:heartbeat:*").catch(() => [] as string[]);
+    const workerKeys = await withTimeout(redis.keys("worker:heartbeat:*"), T, [] as string[]).catch(() => [] as string[]);
 
     // Today's usage
-    const todayUsage = await getDailyUsage().catch(() => ({ inputTokens: 0, outputTokens: 0, totalTokens: 0, calls: 0, costUSD: 0 }));
+    const todayUsage = await withTimeout(
+      getDailyUsage(),
+      T,
+      { inputTokens: 0, outputTokens: 0, totalTokens: 0, calls: 0, costUSD: 0 }
+    ).catch(() => ({ inputTokens: 0, outputTokens: 0, totalTokens: 0, calls: 0, costUSD: 0 }));
 
     // Today's stats
-    const dailyStats = await getDailyStats().catch(() => ({
+    const dailyStats = await withTimeout(
+      getDailyStats(),
+      T,
+      { executions: 0, policy_blocked: 0, skill_success: 0, skill_fail: 0, prospects_found: 0, emails_sent: 0, sms_sent: 0, calls_booked: 0 }
+    ).catch(() => ({
       executions: 0, policy_blocked: 0, skill_success: 0, skill_fail: 0,
       prospects_found: 0, emails_sent: 0, sms_sent: 0, calls_booked: 0,
     }));
@@ -367,6 +418,297 @@ app.get("/api/prospects/export.csv", async (_req, res) => {
     res.send([header, ...rows].join("\n"));
   } catch (error) {
     res.status(500).json({ error: "Failed to export", detail: String(error) });
+  }
+});
+
+// ──────────────────────────────────────────────────────────────────────────────
+// AGENT CONFIGURATION CRUD
+// ──────────────────────────────────────────────────────────────────────────────
+
+/** GET /api/agents — list all agent configs */
+app.get("/api/agents", async (_req, res) => {
+  try {
+    const agents = await listAgents();
+    res.json({ data: agents, total: agents.length });
+  } catch (error) {
+    res.status(500).json({ error: "Failed to fetch agents", detail: String(error) });
+  }
+});
+
+/** GET /api/agents/template — default blank agent */
+app.get("/api/agents/template", (_req, res) => {
+  res.json(getDefaultAgentTemplate());
+});
+
+/** GET /api/agents/:id */
+app.get("/api/agents/:id", async (req, res) => {
+  try {
+    const agent = await getAgent(req.params.id);
+    if (!agent) return res.status(404).json({ error: "Agent not found" });
+    res.json(agent);
+  } catch (error) {
+    res.status(500).json({ error: "Failed to fetch agent", detail: String(error) });
+  }
+});
+
+/** POST /api/agents — create new agent */
+app.post("/api/agents", async (req, res) => {
+  try {
+    const template = getDefaultAgentTemplate();
+    const agent = await createAgent({ ...template, ...req.body });
+    res.status(201).json(agent);
+  } catch (error) {
+    res.status(500).json({ error: "Failed to create agent", detail: String(error) });
+  }
+});
+
+/** PUT /api/agents/:id — full update */
+app.put("/api/agents/:id", async (req, res) => {
+  try {
+    const agent = await updateAgent(req.params.id, req.body);
+    if (!agent) return res.status(404).json({ error: "Agent not found" });
+    res.json(agent);
+  } catch (error) {
+    res.status(500).json({ error: "Failed to update agent", detail: String(error) });
+  }
+});
+
+/** POST /api/agents/:id/status — toggle active/paused/draft */
+app.post("/api/agents/:id/status", async (req, res) => {
+  const { status } = req.body;
+  if (!["active", "paused", "draft"].includes(status)) {
+    return res.status(400).json({ error: "status must be active | paused | draft" });
+  }
+  try {
+    const agent = await setAgentStatus(req.params.id, status);
+    if (!agent) return res.status(404).json({ error: "Agent not found" });
+    res.json(agent);
+  } catch (error) {
+    res.status(500).json({ error: "Failed to update status", detail: String(error) });
+  }
+});
+
+/** DELETE /api/agents/:id */
+app.delete("/api/agents/:id", async (req, res) => {
+  try {
+    const ok = await deleteAgent(req.params.id);
+    if (!ok) return res.status(404).json({ error: "Agent not found" });
+    res.json({ success: true });
+  } catch (error) {
+    res.status(500).json({ error: "Failed to delete agent", detail: String(error) });
+  }
+});
+
+// ──────────────────────────────────────────────────────────────────────────────
+// PROSPECT MANAGEMENT — status updates, notes, delete
+// ──────────────────────────────────────────────────────────────────────────────
+
+/** PATCH /api/prospects/:id — update status and/or notes */
+app.patch("/api/prospects/:id", async (req, res) => {
+  const { id } = req.params;
+  const { status, notes } = req.body;
+
+  const validStatuses = ["new", "outreached", "responded", "converted", "do_not_outreach"];
+  if (status && !validStatuses.includes(status)) {
+    return res.status(400).json({ error: `status must be one of: ${validStatuses.join(", ")}` });
+  }
+
+  try {
+    // Find prospect by ID
+    const raw = await redis.get(`prospect:id:${id}`);
+    if (!raw) return res.status(404).json({ error: "Prospect not found" });
+    const prospect = JSON.parse(raw);
+
+    const updated = await updateProspectStatus({
+      prospectId: id,
+      phone: prospect.phone,
+      email: prospect.email,
+      status: status || prospect.status,
+      notes: notes ?? prospect.notes,
+    });
+
+    if (!updated) return res.status(404).json({ error: "Prospect not found in store" });
+    res.json(updated);
+  } catch (error) {
+    res.status(500).json({ error: "Failed to update prospect", detail: String(error) });
+  }
+});
+
+/** DELETE /api/prospects/:id */
+app.delete("/api/prospects/:id", async (req, res) => {
+  const { id } = req.params;
+  try {
+    const raw = await redis.get(`prospect:id:${id}`);
+    if (!raw) return res.status(404).json({ error: "Prospect not found" });
+    const p = JSON.parse(raw);
+
+    const pipeline = redis.pipeline();
+    pipeline.del(`prospect:id:${id}`);
+    if (p.phone) pipeline.del(`prospect:phone:${p.phone.replace(/\D/g, "")}`);
+    if (p.email) pipeline.del(`prospect:email:${p.email.trim().toLowerCase()}`);
+    await pipeline.exec();
+
+    res.json({ success: true, id });
+  } catch (error) {
+    res.status(500).json({ error: "Failed to delete prospect", detail: String(error) });
+  }
+});
+
+// ──────────────────────────────────────────────────────────────────────────────
+// TEST LEAD — fire a synthetic lead through the full pipeline for testing
+// ──────────────────────────────────────────────────────────────────────────────
+
+/**
+ * POST /api/test-lead
+ * Fires a synthetic lead directly into the Redis stream — bypasses ingestion auth.
+ * Use this to test the full pipeline without needing curl or Postman.
+ */
+app.post("/api/test-lead", async (req, res) => {
+  try {
+    const {
+      name = "Test Lead",
+      phone = "",
+      email = "",
+      company = "Test Company",
+      zip = "33101",
+      city = "Miami",
+      state = "FL",
+      tenantId = "smartklix-test",
+    } = req.body;
+
+    if (!phone && !email) {
+      return res.status(400).json({ error: "Provide at least phone or email" });
+    }
+
+    const trace_id = uuidv4();
+    const span_id = uuidv4();
+
+    const event = {
+      metadata: {
+        trace_id,
+        span_id,
+        timestamp: new Date().toISOString(),
+        source: "admin_test",
+        tenant_id: tenantId,
+      },
+      type: "lead_ingested",
+      payload: {
+        id: uuidv4(),
+        name,
+        phone: phone || null,
+        email: email || null,
+        company,
+        zip,
+        city,
+        state,
+        idempotency_key: `test-${trace_id}`,
+        schema_version: "1.0",
+      },
+    };
+
+    await pushToStream(STREAMS.EVENTS, event);
+
+    res.status(202).json({
+      status: "accepted",
+      trace_id,
+      message: "Test lead fired — watch Activity Feed and Executions for processing.",
+    });
+  } catch (error) {
+    res.status(500).json({ error: "Failed to fire test lead", detail: String(error) });
+  }
+});
+
+// ──────────────────────────────────────────────────────────────────────────────
+// SETTINGS — integration health check, env visibility
+// ──────────────────────────────────────────────────────────────────────────────
+
+/** GET /api/settings — returns which integrations are configured and their status */
+app.get("/api/settings", async (_req, res) => {
+  // Check Redis connectivity
+  let redisStatus = "disconnected";
+  try {
+    await withTimeout(redis.ping(), 3000, null);
+    redisStatus = "connected";
+  } catch {}
+
+  // Check ClickHouse
+  let clickhouseStatus = "not_configured";
+  if (process.env.CLICKHOUSE_HOST) {
+    clickhouseStatus = clickhouse ? "connected" : "error";
+  }
+
+  const integrations = {
+    redis: { configured: !!process.env.REDIS_URL, status: redisStatus },
+    anthropic: { configured: !!process.env.ANTHROPIC_API_KEY, status: process.env.ANTHROPIC_API_KEY ? "configured" : "missing" },
+    resend: { configured: !!process.env.RESEND_API_KEY, status: process.env.RESEND_API_KEY ? "configured" : "simulation_mode" },
+    twilio: {
+      configured: !!(process.env.TWILIO_ACCOUNT_SID && process.env.TWILIO_AUTH_TOKEN),
+      status: (process.env.TWILIO_ACCOUNT_SID && process.env.TWILIO_AUTH_TOKEN) ? "configured" : "simulation_mode",
+    },
+    firecrawl: { configured: !!process.env.FIRECRAWL_API_KEY, status: process.env.FIRECRAWL_API_KEY ? "configured" : "simulation_mode" },
+    calendly: { configured: !!process.env.CALENDLY_API_KEY, status: process.env.CALENDLY_API_KEY ? "configured" : "simulation_mode" },
+    clickhouse: { configured: !!process.env.CLICKHOUSE_HOST, status: clickhouseStatus },
+    crm: {
+      configured: !!(process.env.CRM_BASE_URL && process.env.AGENT_INTERNAL_TOKEN),
+      status: (process.env.CRM_BASE_URL && process.env.AGENT_INTERNAL_TOKEN) ? "configured" : "not_configured",
+      url: process.env.CRM_BASE_URL || null,
+    },
+    googlePlaces: {
+      configured: !!process.env.GOOGLE_PLACES_API_KEY,
+      status: process.env.GOOGLE_PLACES_API_KEY ? "configured" : "demo_mode",
+      note: process.env.GOOGLE_PLACES_API_KEY ? "Live Google Places search active" : "Using demo mode — add GOOGLE_PLACES_API_KEY for real leads",
+    },
+  };
+
+  const policies = {
+    weekendOutreachDisabled: process.env.DISABLE_WEEKEND_POLICY !== "true",
+    maxLoopDepth: 5,
+    llmCallsPerTrace: 1,
+    prospectTTLDays: 90,
+    tokenCostInputPerM: parseFloat(process.env.TOKEN_COST_INPUT_PER_M || "0.80"),
+    tokenCostOutputPerM: parseFloat(process.env.TOKEN_COST_OUTPUT_PER_M || "4.00"),
+    resendFromEmail: process.env.RESEND_FROM_EMAIL || "noreply@resend.dev (default)",
+    adminAuthEnabled: !!process.env.ADMIN_TOKEN,
+    searchIntervalMinutes: parseInt(process.env.SEARCH_INTERVAL_MINUTES ?? "30", 10),
+    leadSourcerMode: process.env.GOOGLE_PLACES_API_KEY ? "google_places" : "demo",
+  };
+
+  res.json({ integrations, policies, timestamp: new Date().toISOString() });
+});
+
+// ──────────────────────────────────────────────────────────────────────────────
+// LEAD SOURCER — status + manual trigger
+// ──────────────────────────────────────────────────────────────────────────────
+
+/** GET /api/sourcer/status — scheduler state, last run, next run */
+app.get("/api/sourcer/status", async (_req, res) => {
+  try {
+    const { getSchedulerStatus } = await import("../scheduler");
+    const status = await getSchedulerStatus();
+    res.json({
+      ...status,
+      mode: process.env.GOOGLE_PLACES_API_KEY ? "google_places" : "demo",
+      googlePlacesConfigured: !!process.env.GOOGLE_PLACES_API_KEY,
+    });
+  } catch (error) {
+    res.status(500).json({ error: "Failed to fetch sourcer status", detail: String(error) });
+  }
+});
+
+/** POST /api/sourcer/trigger — manually kick off a sourcer pass right now */
+app.post("/api/sourcer/trigger", async (_req, res) => {
+  try {
+    const { triggerSourcerNow } = await import("../scheduler");
+    const result = await triggerSourcerNow();
+    if (!result.triggered) {
+      return res.status(409).json({ error: result.reason });
+    }
+    res.json({
+      triggered: true,
+      message: "Lead sourcer pass triggered — watch Activity Feed for results",
+    });
+  } catch (error) {
+    res.status(500).json({ error: "Failed to trigger sourcer", detail: String(error) });
   }
 });
 
