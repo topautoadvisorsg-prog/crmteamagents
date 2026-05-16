@@ -151,7 +151,7 @@ export async function triggerSourcerNow(): Promise<{ triggered: boolean; reason?
 // Creates a construction-company sourcer targeting major metros
 // ────────────────────────────────────────────────────────────────────────────
 
-const SEED_KEY = "scheduler:agents_seeded";
+const SEED_KEY = "scheduler:agents_seeded_v2"; // bump version to re-seed with updated defaults
 
 async function seedDefaultAgentIfNeeded(): Promise<void> {
   const alreadySeeded = await redis.get(SEED_KEY).catch(() => null);
@@ -166,55 +166,75 @@ async function seedDefaultAgentIfNeeded(): Promise<void> {
   console.log("[Scheduler] No agents found — seeding default construction sourcer agent");
 
   await createAgent({
-    name: "Construction Co. — No Website Sourcer",
-    description: "Finds construction companies across the US that have no website. Targets general contractors, roofers, painters, electricians, and plumbers. Sources leads via Google Places (or demo mode).",
+    name: "Smart Click — Construction No-Website Sourcer",
+    description: "Finds residential construction companies with no website across Colorado, Florida, Texas, Georgia, and NC. These are our ideal clients — discoverable online, active businesses, but no web presence.",
     status: "active",
     icp: {
-      industries: ["construction", "roofing", "plumbing", "electrical", "painting", "hvac", "general contractor"],
-      keywords: ["general contractor", "roofer", "plumber", "electrician", "painter", "remodeling", "home improvement"],
-      negativeKeywords: ["commercial", "franchise", "chain"],
-      businessType: "residential contractor",
-      minEmployees: 1,
-      maxEmployees: 50,
+      industries: [
+        "General Contractor",
+        "Roofing / Roofer",
+        "Painter / Painting",
+        "Electrician",
+        "Plumber / Plumbing",
+        "HVAC",
+        "Remodeling / Renovation",
+        "Concrete / Foundation",
+        "Siding / Gutters",
+      ],
+      keywords: ["contractor", "construction", "roofing", "remodeling", "home improvement"],
+      negativeKeywords: ["franchise", "chain", "national", "commercial"],
+      businessType: "residential",
     },
     territory: {
       targetZips: [
-        // South Florida
-        "33101", "33125", "33135", "33142", "33155", "33165", "33175",
-        "33010", "33012", "33018", "33024", "33027", "33030",
-        // Texas metros
-        "75001", "75019", "75034", "75050", "75063", "75080",
-        "77001", "77025", "77042", "77055", "77080", "77095",
-        // Georgia
-        "30002", "30032", "30058", "30080", "30120", "30152",
-        // North Carolina
-        "28201", "28269", "28277", "28304", "28403",
-        // Ohio
-        "43001", "43023", "43068", "43085", "43110",
+        // Colorado — Denver metro (start here per user request)
+        "80202","80203","80204","80205","80206","80207","80209","80210",
+        "80211","80212","80214","80216","80218","80219","80220","80221",
+        "80222","80223","80224","80226","80227","80228","80229","80230",
+        // Colorado Springs
+        "80901","80903","80904","80905","80906","80907","80908","80909",
+        "80910","80911","80915","80916","80917","80918","80919","80920",
+        // Aurora CO
+        "80010","80011","80012","80013","80014","80015","80016","80017",
+        // Miami FL
+        "33101","33125","33127","33135","33142","33155","33165","33172",
+        "33175","33176","33177","33178","33183","33184","33185","33186",
+        // Fort Lauderdale FL
+        "33301","33309","33311","33312","33313","33317","33319","33321",
+        // Houston TX
+        "77001","77006","77008","77018","77022","77025","77036","77040",
+        "77055","77063","77071","77080","77081","77082","77083","77084",
+        // Dallas TX
+        "75201","75204","75206","75208","75211","75212","75217","75219",
+        "75220","75223","75224","75226","75228","75232","75234","75241",
+        // Atlanta GA
+        "30303","30306","30307","30310","30311","30314","30315","30316",
+        "30318","30310","30328","30331","30336","30339","30344","30349",
+        // Charlotte NC
+        "28202","28203","28205","28206","28208","28209","28210","28212",
+        "28213","28214","28215","28216","28226","28227","28269","28277",
       ],
-      targetCities: ["Miami", "Houston", "Dallas", "Atlanta", "Charlotte", "Columbus"],
-      targetStates: ["FL", "TX", "GA", "NC", "OH"],
+      targetCities: ["Denver", "Colorado Springs", "Aurora", "Miami", "Fort Lauderdale", "Houston", "Dallas", "Atlanta", "Charlotte"],
+      targetStates: ["CO", "FL", "TX", "GA", "NC"],
       cooldownDays: 90,
-      radiusMiles: 10,
     },
     outreach: {
       channel: "email",
-      emailTemplate: `Subject: Quick question about your online presence
+      emailTemplate: `Hi {name},
 
-Hi {name},
+I noticed {company} shows up online but doesn't have a website yet.
 
-I came across {company} and noticed you might not have a website yet.
+In today's market, most homeowners search Google before calling anyone — if your business isn't there, those jobs go to a competitor who is.
 
-In today's market, most homeowners search online before calling anyone — if you're not there, you're losing jobs to competitors who are.
+Smart Click Agency builds fast, professional websites for contractors. Most clients start getting more calls within 30 days. We handle everything — design, copy, hosting.
 
-We build fast, affordable websites specifically for contractors. Clients typically see more calls within 30 days.
-
-Would you be open to a quick 10-minute call this week?
+Would you be open to a quick 10-minute call this week to see if it's a fit?
 
 Best,
 [Your Name]
-Smart Click Agency`,
-      smsTemplate: "Hi {name}, I noticed {company} doesn't have a website yet. We build contractor sites that get calls fast. Interested in a quick chat? Reply YES.",
+Smart Click Agency
+smartclickagency.com`,
+      smsTemplate: "Hi {name}, noticed {company} doesn't have a website yet — homeowners search online first now. We build contractor sites fast. Worth a 10-min chat? Reply YES.",
       maxOutreachPerDay: 30,
       followUpDays: 5,
       requireWarmLead: false,
@@ -222,7 +242,7 @@ Smart Click Agency`,
     qualification: {
       minConfidenceScore: 0.6,
       autoRegister: true,
-      autoOutreach: false, // register first, human reviews before sending
+      autoOutreach: false,
     },
   });
 
@@ -231,7 +251,7 @@ Smart Click Agency`,
   await pushActivity({
     level: "success",
     category: "system",
-    message: "Default agent seeded: Construction Co. — No Website Sourcer (active, 40 target ZIPs across FL/TX/GA/NC/OH)",
+    message: "Default agent seeded: Smart Click — Construction No-Website Sourcer (active, CO + FL + TX + GA + NC)",
     meta: { seeded: true },
   }).catch(() => {});
 

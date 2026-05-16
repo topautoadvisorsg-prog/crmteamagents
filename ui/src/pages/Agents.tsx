@@ -4,8 +4,9 @@ import {
   Bot, Plus, RefreshCw, Play, Pause, Edit3, Trash2, ChevronRight,
   ChevronDown, Mail, MessageSquare, Globe, Tag, MapPin, Target,
   CheckCircle, Clock, FileText, Save, X, AlertTriangle, ArrowRight,
-  Search, Users, Send, PhoneCall, Info
+  Search, Users, Send, PhoneCall, Info, Flame, TrendingUp, Building2
 } from "lucide-react";
+import { MARKETS, STATES, getMarketsByState, INDUSTRIES, type Market } from "../data/markets";
 import clsx from "clsx";
 
 type AgentStatus = "active" | "paused" | "draft";
@@ -92,6 +93,159 @@ function TagInput({ label, values, onChange, placeholder }: {
         />
         <button onClick={add} className="px-3 py-1.5 bg-gray-700 hover:bg-gray-600 text-gray-300 text-xs rounded-lg">Add</button>
       </div>
+    </div>
+  );
+}
+
+// ── Market Selector ───────────────────────────────────────
+const TIER_ICON: Record<string, any> = {
+  "🔥 Hot": Flame,
+  "📈 Growing": TrendingUp,
+  "✅ Solid": Building2,
+};
+
+function MarketSelector({ selectedZips, selectedCities, selectedStates, onUpdate }: {
+  selectedZips: string[];
+  selectedCities: string[];
+  selectedStates: string[];
+  onUpdate: (zips: string[], cities: string[], states: string[]) => void;
+}) {
+  const [selectedState, setSelectedState] = useState(selectedStates[0] ?? "CO");
+  const marketsInState = getMarketsByState(selectedState);
+
+  // Track which markets are currently "selected" (all their ZIPs are in the list)
+  const addedMarkets = MARKETS.filter(m =>
+    m.zips.every(z => selectedZips.includes(z))
+  );
+  const addedMarketIds = new Set(addedMarkets.map(m => m.id));
+
+  const addMarket = (market: Market) => {
+    const newZips = [...new Set([...selectedZips, ...market.zips])];
+    const newCities = [...new Set([...selectedCities, market.city])];
+    const newStates = [...new Set([...selectedStates, market.stateCode])];
+    onUpdate(newZips, newCities, newStates);
+  };
+
+  const removeMarket = (market: Market) => {
+    const newZips = selectedZips.filter(z => !market.zips.includes(z));
+    const stillHasCities = addedMarkets.filter(m => m.id !== market.id && m.city === market.city);
+    const newCities = stillHasCities.length > 0 ? selectedCities : selectedCities.filter(c => c !== market.city);
+    const stillHasState = addedMarkets.filter(m => m.id !== market.id && m.stateCode === market.stateCode);
+    const newStates = stillHasState.length > 0 ? selectedStates : selectedStates.filter(s => s !== market.stateCode);
+    onUpdate(newZips, newCities, newStates);
+  };
+
+  return (
+    <div className="space-y-4">
+      {/* Added markets */}
+      {addedMarkets.length > 0 && (
+        <div>
+          <label className="block text-xs text-gray-500 mb-2">
+            Active Markets — {selectedZips.length} ZIP codes loaded
+          </label>
+          <div className="flex flex-wrap gap-2">
+            {addedMarkets.map(m => (
+              <div key={m.id} className="flex items-center gap-2 bg-brand-blue/20 border border-brand-blue/40 text-blue-300 text-xs px-3 py-1.5 rounded-lg">
+                <MapPin className="w-3 h-3" />
+                <span className="font-semibold">{m.city}, {m.stateCode}</span>
+                <span className="text-blue-400/70">({m.zips.length} ZIPs)</span>
+                <button onClick={() => removeMarket(m)} className="text-blue-400/60 hover:text-red-400 ml-1">
+                  <X className="w-3 h-3" />
+                </button>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* State picker */}
+      <div>
+        <label className="block text-xs text-gray-500 mb-2">Add a Market — Select State</label>
+        <div className="flex flex-wrap gap-1.5 mb-3">
+          {STATES.map(sc => {
+            const hasActive = addedMarkets.some(m => m.stateCode === sc);
+            return (
+              <button
+                key={sc}
+                onClick={() => setSelectedState(sc)}
+                className={clsx(
+                  "px-3 py-1.5 rounded-lg text-xs font-bold border transition-colors",
+                  selectedState === sc
+                    ? "bg-brand-blue border-brand-blue text-white"
+                    : hasActive
+                    ? "bg-blue-950/40 border-blue-800 text-blue-400"
+                    : "bg-gray-800 border-gray-700 text-gray-400 hover:border-gray-600"
+                )}
+              >
+                {sc}
+                {hasActive && <span className="ml-1 text-[9px]">●</span>}
+              </button>
+            );
+          })}
+        </div>
+
+        {/* Cities in selected state */}
+        <div className="space-y-2">
+          {marketsInState.map(market => {
+            const isAdded = addedMarketIds.has(market.id);
+            const TierIcon = TIER_ICON[market.tier] ?? Building2;
+            return (
+              <div
+                key={market.id}
+                className={clsx(
+                  "flex items-center justify-between px-4 py-3 rounded-xl border transition-colors",
+                  isAdded
+                    ? "bg-brand-blue/10 border-brand-blue/40"
+                    : "bg-gray-900 border-gray-800 hover:border-gray-700"
+                )}
+              >
+                <div className="flex items-center gap-3 min-w-0">
+                  <TierIcon className={clsx("w-4 h-4 shrink-0",
+                    market.tier === "🔥 Hot" ? "text-orange-400" :
+                    market.tier === "📈 Growing" ? "text-green-400" : "text-gray-400"
+                  )} />
+                  <div className="min-w-0">
+                    <div className="flex items-center gap-2">
+                      <span className="text-sm font-bold text-gray-200">{market.city}</span>
+                      <span className={clsx("text-[10px] font-bold px-1.5 py-0.5 rounded",
+                        market.tier === "🔥 Hot" ? "bg-orange-950 text-orange-400" :
+                        market.tier === "📈 Growing" ? "bg-green-950 text-green-400" :
+                        "bg-gray-800 text-gray-400"
+                      )}>{market.tier}</span>
+                    </div>
+                    <p className="text-[10px] text-gray-500 truncate">{market.note}</p>
+                  </div>
+                </div>
+                <div className="flex items-center gap-3 shrink-0 ml-3">
+                  <span className="text-[10px] text-gray-600">{market.zips.length} ZIPs</span>
+                  {isAdded ? (
+                    <button
+                      onClick={() => removeMarket(market)}
+                      className="flex items-center gap-1 px-3 py-1.5 bg-red-950 hover:bg-red-900 border border-red-800 text-red-400 text-xs rounded-lg transition-colors"
+                    >
+                      <X className="w-3 h-3" /> Remove
+                    </button>
+                  ) : (
+                    <button
+                      onClick={() => addMarket(market)}
+                      className="flex items-center gap-1 px-3 py-1.5 bg-brand-blue hover:bg-blue-700 text-white text-xs font-semibold rounded-lg transition-colors"
+                    >
+                      <Plus className="w-3 h-3" /> Add
+                    </button>
+                  )}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      </div>
+
+      {selectedZips.length === 0 && (
+        <div className="flex items-center gap-2 text-[11px] text-yellow-500 bg-yellow-950/30 border border-yellow-900 rounded-lg px-3 py-2">
+          <AlertTriangle className="w-3.5 h-3.5 shrink-0" />
+          No markets selected — add at least one city above to start sourcing leads
+        </div>
+      )}
     </div>
   );
 }
@@ -194,50 +348,89 @@ function AgentForm({ initial, onSave, onCancel, isSaving }: {
         </div>
       </div>
 
-      {/* ICP */}
-      <Section id="icp" title="Ideal Customer Profile (ICP)" icon={Target}>
+      {/* ICP — Industry checkboxes */}
+      <Section id="icp" title="Who Are You Looking For?" icon={Target}>
+        <div>
+          <label className="block text-xs text-gray-500 mb-2">
+            Industry Types <span className="text-gray-600">(check all that apply)</span>
+          </label>
+          <div className="grid grid-cols-2 lg:grid-cols-3 gap-2">
+            {INDUSTRIES.map(industry => {
+              const checked = form.icp.industries.includes(industry);
+              return (
+                <label
+                  key={industry}
+                  className={clsx(
+                    "flex items-center gap-2 px-3 py-2 rounded-lg border cursor-pointer transition-colors text-xs",
+                    checked
+                      ? "bg-brand-blue/20 border-brand-blue text-blue-300"
+                      : "bg-gray-800 border-gray-700 text-gray-400 hover:border-gray-600"
+                  )}
+                >
+                  <input
+                    type="checkbox"
+                    checked={checked}
+                    onChange={() => {
+                      const next = checked
+                        ? form.icp.industries.filter((i: string) => i !== industry)
+                        : [...form.icp.industries, industry];
+                      set("icp.industries", next);
+                    }}
+                    className="hidden"
+                  />
+                  <CheckCircle className={clsx("w-3.5 h-3.5 shrink-0", checked ? "text-brand-blue" : "text-gray-700")} />
+                  {industry}
+                </label>
+              );
+            })}
+          </div>
+          {form.icp.industries.length === 0 && (
+            <p className="text-[11px] text-yellow-500 mt-2">⚠ Select at least one industry type</p>
+          )}
+        </div>
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
           <div>
-            <label className="block text-xs text-gray-500 mb-1.5">Business Type</label>
-            <input
-              type="text"
-              value={form.icp.businessType}
-              onChange={e => set("icp.businessType", e.target.value)}
-              placeholder="e.g. residential roofing contractor"
-              className="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-xs text-gray-100 placeholder-gray-600 focus:outline-none focus:border-brand-blue"
-            />
+            <label className="block text-xs text-gray-500 mb-1.5">Customer Type</label>
+            <select value={form.icp.businessType} onChange={e => set("icp.businessType", e.target.value)}
+              className="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-xs text-gray-100 focus:outline-none focus:border-brand-blue">
+              <option value="">All types</option>
+              <option value="residential">Residential only</option>
+              <option value="commercial">Commercial only</option>
+              <option value="both">Residential + Commercial</option>
+            </select>
+            <p className="text-[10px] text-gray-600 mt-1">Residential contractors are most likely to lack a website</p>
           </div>
-          <div className="grid grid-cols-2 gap-3">
-            <div>
-              <label className="block text-xs text-gray-500 mb-1.5">Min Employees</label>
-              <input type="number" value={form.icp.minEmployees} onChange={e => set("icp.minEmployees", e.target.value)}
-                className="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-xs text-gray-100 focus:outline-none focus:border-brand-blue" />
-            </div>
-            <div>
-              <label className="block text-xs text-gray-500 mb-1.5">Max Employees</label>
-              <input type="number" value={form.icp.maxEmployees} onChange={e => set("icp.maxEmployees", e.target.value)}
-                className="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-xs text-gray-100 focus:outline-none focus:border-brand-blue" />
-            </div>
+          <div>
+            <label className="block text-xs text-gray-500 mb-1.5">Exclude (Negative Keywords)</label>
+            <TagInput label="" values={form.icp.negativeKeywords} onChange={v => set("icp.negativeKeywords", v)} placeholder="franchise, chain, national…" />
           </div>
         </div>
-        <TagInput label="Target Industries" values={form.icp.industries} onChange={v => set("icp.industries", v)} placeholder="e.g. roofing, hvac, plumbing" />
-        <TagInput label="Keywords to Match" values={form.icp.keywords} onChange={v => set("icp.keywords", v)} placeholder="e.g. storm damage, roof repair" />
-        <TagInput label="Negative Keywords (Exclude)" values={form.icp.negativeKeywords} onChange={v => set("icp.negativeKeywords", v)} placeholder="e.g. commercial, new construction" />
       </Section>
 
-      {/* Territory */}
-      <Section id="territory" title="Geographic Territory" icon={MapPin}>
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-          <TagInput label="Target States" values={form.territory.targetStates} onChange={v => set("territory.targetStates", v)} placeholder="e.g. FL, TX, GA" />
-          <TagInput label="Target Cities" values={form.territory.targetCities} onChange={v => set("territory.targetCities", v)} placeholder="e.g. Miami, Tampa" />
-        </div>
-        <TagInput label="Target ZIP Codes" values={form.territory.targetZips} onChange={v => set("territory.targetZips", v)} placeholder="e.g. 33101, 33102" />
-        <div className="grid grid-cols-2 gap-4">
+      {/* Territory — Market selector */}
+      <Section id="territory" title="Where to Search" icon={MapPin}>
+        <MarketSelector
+          selectedZips={form.territory.targetZips}
+          selectedCities={form.territory.targetCities}
+          selectedStates={form.territory.targetStates}
+          onUpdate={(zips, cities, states) => {
+            set("territory.targetZips", zips);
+            set("territory.targetCities", cities);
+            set("territory.targetStates", states);
+          }}
+        />
+        <div className="grid grid-cols-2 gap-4 mt-2">
           <div>
-            <label className="block text-xs text-gray-500 mb-1.5">Cooldown Period (days)</label>
-            <input type="number" value={form.territory.cooldownDays} onChange={e => set("territory.cooldownDays", parseInt(e.target.value) || 90)}
-              className="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-xs text-gray-100 focus:outline-none focus:border-brand-blue" />
-            <p className="text-[10px] text-gray-600 mt-1">Days before re-searching a ZIP code</p>
+            <label className="block text-xs text-gray-500 mb-1.5">Cooldown Period</label>
+            <select value={form.territory.cooldownDays} onChange={e => set("territory.cooldownDays", parseInt(e.target.value))}
+              className="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-xs text-gray-100 focus:outline-none focus:border-brand-blue">
+              <option value={30}>30 days</option>
+              <option value={60}>60 days</option>
+              <option value={90}>90 days (recommended)</option>
+              <option value={180}>180 days</option>
+              <option value={365}>1 year</option>
+            </select>
+            <p className="text-[10px] text-gray-600 mt-1">How long before re-searching a ZIP code</p>
           </div>
         </div>
       </Section>
@@ -256,13 +449,25 @@ function AgentForm({ initial, onSave, onCancel, isSaving }: {
           </div>
           <div>
             <label className="block text-xs text-gray-500 mb-1.5">Max Outreach / Day</label>
-            <input type="number" value={form.outreach.maxOutreachPerDay} onChange={e => set("outreach.maxOutreachPerDay", parseInt(e.target.value) || 50)}
-              className="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-xs text-gray-100 focus:outline-none focus:border-brand-blue" />
+            <select value={form.outreach.maxOutreachPerDay} onChange={e => set("outreach.maxOutreachPerDay", parseInt(e.target.value))}
+              className="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-xs text-gray-100 focus:outline-none focus:border-brand-blue">
+              <option value={10}>10/day — very conservative</option>
+              <option value={20}>20/day — conservative</option>
+              <option value={30}>30/day — recommended</option>
+              <option value={50}>50/day — aggressive</option>
+              <option value={100}>100/day — maximum</option>
+            </select>
           </div>
           <div>
-            <label className="block text-xs text-gray-500 mb-1.5">Follow-up After (days)</label>
-            <input type="number" value={form.outreach.followUpDays} onChange={e => set("outreach.followUpDays", parseInt(e.target.value) || 3)}
-              className="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-xs text-gray-100 focus:outline-none focus:border-brand-blue" />
+            <label className="block text-xs text-gray-500 mb-1.5">Follow-up After</label>
+            <select value={form.outreach.followUpDays} onChange={e => set("outreach.followUpDays", parseInt(e.target.value))}
+              className="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-xs text-gray-100 focus:outline-none focus:border-brand-blue">
+              <option value={1}>1 day</option>
+              <option value={3}>3 days (recommended)</option>
+              <option value={5}>5 days</option>
+              <option value={7}>1 week</option>
+              <option value={14}>2 weeks</option>
+            </select>
           </div>
         </div>
         <div>
