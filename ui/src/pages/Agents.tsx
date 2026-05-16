@@ -3,7 +3,8 @@ import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import {
   Bot, Plus, RefreshCw, Play, Pause, Edit3, Trash2, ChevronRight,
   ChevronDown, Mail, MessageSquare, Globe, Tag, MapPin, Target,
-  CheckCircle, Clock, FileText, Save, X, AlertTriangle
+  CheckCircle, Clock, FileText, Save, X, AlertTriangle, ArrowRight,
+  Search, Users, Send, PhoneCall, Info
 } from "lucide-react";
 import clsx from "clsx";
 
@@ -517,6 +518,37 @@ export default function Agents() {
           <Plus className="w-4 h-4" />
           New Agent
         </button>
+      </div>
+
+      {/* How it works — pipeline flow */}
+      <div className="bg-gray-900 border border-gray-800 rounded-xl p-5">
+        <div className="flex items-center gap-2 mb-4">
+          <Info className="w-4 h-4 text-brand-blue" />
+          <p className="text-[10px] font-black uppercase tracking-widest text-gray-500">How the Pipeline Works</p>
+        </div>
+        <div className="flex flex-wrap items-center gap-2">
+          {[
+            { icon: Bot,       label: "Agent",       sub: "You define what\nto search",         color: "text-blue-400",   bg: "bg-blue-950/50",   border: "border-blue-800" },
+            { icon: Search,    label: "ZIP Search",  sub: "Sourcer runs every\n30 min per agent", color: "text-purple-400", bg: "bg-purple-950/50", border: "border-purple-800" },
+            { icon: Globe,     label: "No Website?", sub: "Filter: only companies\nwithout a site", color: "text-yellow-400", bg: "bg-yellow-950/50", border: "border-yellow-800" },
+            { icon: Users,     label: "Registered",  sub: "Added to\nProspect Pool",             color: "text-indigo-400", bg: "bg-indigo-950/50", border: "border-indigo-800" },
+            { icon: Send,      label: "Outreach",    sub: "Email or SMS\nper your template",     color: "text-green-400",  bg: "bg-green-950/50",  border: "border-green-800" },
+            { icon: PhoneCall, label: "Booking",     sub: "Lead replies →\ncall booked",         color: "text-brand-yellow", bg: "bg-yellow-950/30", border: "border-yellow-700" },
+          ].map((step, i, arr) => (
+            <div key={step.label} className="flex items-center gap-2">
+              <div className={clsx("flex flex-col items-center gap-1 px-3 py-2.5 rounded-xl border min-w-[90px]", step.bg, step.border)}>
+                <step.icon className={clsx("w-4 h-4", step.color)} />
+                <p className={clsx("text-xs font-bold", step.color)}>{step.label}</p>
+                <p className="text-[9px] text-gray-500 text-center whitespace-pre-line leading-tight">{step.sub}</p>
+              </div>
+              {i < arr.length - 1 && <ArrowRight className="w-4 h-4 text-gray-700 shrink-0" />}
+            </div>
+          ))}
+        </div>
+        <p className="mt-3 text-[11px] text-gray-600">
+          <span className="text-brand-blue font-semibold">Set an agent to Active</span> → the sourcer picks it up on the next tick → leads flow into Prospects automatically.
+          The AI decides each action. You review and adjust in the Prospects tab.
+        </p>
       </div>
 
       {isLoading ? (

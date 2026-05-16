@@ -1,204 +1,219 @@
-# AI Lead Execution Control Plane (V1.7)
+# SmartKlix Agent Control Plane (V1.8)
 
-**Last Updated:** May 10, 2026  
-**Status:** Active — deployed on Railway  
-**Paired with:** SmartKlix CRM (smartklix23)
+Autonomous AI lead generation for construction companies with no website. Finds them, qualifies them, and runs outreach — all on autopilot.
 
----
-
-## 1. System Overview
-
-The **AI Lead Execution Control Plane** is a deterministic, event-driven execution engine for processing business events and executing outreach actions (Email, SMS, Scraping, Booking) through a strict safety and validation pipeline.
-
-**What this system is NOT:**
-- It is NOT an autonomous agent
-- It does NOT give LLMs direct execution authority
-- It is NOT a monolithic application
-
-**What it IS:**
-- The execution arm of SmartKlix CRM
-- A prospect discovery and dedup engine
-- A safety-gated outreach platform
+**Live on Railway:** `web-production-a0d9f.up.railway.app`
 
 ---
 
-## 2. Architecture
+## How It Works — The Full Pipeline
 
 ```
-[CRM Webhook]
-      |
-[Ingestion Service] ──► [Zod Validation] ──► [Idempotency Check]
-      |
-[Redis Streams (SSOT)] ◄── [Event History]
-      |
-[Worker Pool (Consumer Groups)]
-      |
-      ├──► [Context Builder]     (Stateless State Aggregation)
-      |
-      ├──► [Policy Engine]       (Deterministic Rules — BEFORE LLM)
-      |         Rule 1: No outreach on weekends
-      |         Rule 2: Max loop depth (5)
-      |         Rule 3: Tenant isolation
-      |         Rule 4: Do-Not-Outreach hard block ← NEW v1.7
-      |         Rule 5: Warm lead gate
-      |
-      ├──► [LLM Classifier]      (Claude-3: Intent Extraction ONLY, 0.70 threshold)
-      |
-      ├──► [Execution Gate]      (8-Stage Safety Validation)
-      |
-      ├──► [Atomic Lock]         (Redis SET NX)
-      |
-      └──► [Skill Router] ──► [Skill Worker] ──► [SDK Layer] ──► [External APIs]
-                                                                  (Resend, Twilio, etc.)
-
-[Observability] ──► [ClickHouse] + [Redis Streams]
-
-[Prospect Store] ──► [Redis] ──► async sync ──► [CRM /api/prospects]
+┌──────────────┐   every 30min   ┌──────────────┐   lead found   ┌──────────────────────────────────┐
+│   AGENT      │ ──────────────▶ │   SOURCER    │ ─────────────▶ │   PIPELINE (Redis Stream)        │
+│              │                 │              │                 │                                  │
+│ You define:  │                 │ Searches ZIP │                 │  lead_ingested                   │
+│ • Target ZIPs│                 │ codes on     │                 │       ↓ Claude AI qualifies      │
+│ • Industries │                 │ Google Places│                 │  register_prospect               │
+│ • Templates  │                 │ Filters: no  │                 │       ↓ if auto-outreach on      │
+│ • Schedule   │                 │ website = ✓  │                 │  send_email / send_sms           │
+│              │                 │              │                 │       ↓ if lead replies           │
+│ Status:      │                 │ Demo mode if │                 │  book_call                       │
+│ Active = ON  │                 │ no API key   │                 │       ↓                          │
+│ Paused = OFF │                 │              │                 │  crm_sync → converted            │
+└──────────────┘                 └──────────────┘                 └──────────────────────────────────┘
+       │                                │                                      │
+       ▼                                ▼                                      ▼
+  Agents tab                      Territory tab                          Prospects tab
+  Create/configure               ZIP cooldown                           Full pipeline
+  your agents                    tracking                               visibility
 ```
 
 ---
 
-## 3. Skills Registry
+## Getting Started — 3 Steps
 
-| Skill | What it does | Requires |
-|-------|-------------|---------|
-| `check_prospect` | Dedup check — call BEFORE any outreach | phone or email |
-| `register_prospect` | Log new prospect to Redis + sync to CRM | phone or email |
-| `mark_do_not_outreach` | Block prospect from all automated outreach | phone or email |
-| `send_email` | Send email via Resend | warm lead or new |
-| `send_sms` | Send SMS via Twilio | warm lead or new |
-| `scrape_site` | Scrape URL via Firecrawl | warm lead only |
-| `book_call` | Book Calendly meeting | warm lead only |
-| `crm_sync` | Callback to CRM `/api/intake/sync` | warm lead only |
+### Step 1 — Create an Agent (Agents tab)
+An Agent is the **brain of the search**. It tells the system:
+- **WHERE** to look → Target ZIP codes
+- **WHAT** to look for → Industries + keywords
+- **WHAT TO DO** with leads → Email/SMS templates
+
+> ✅ A default agent targeting construction companies across FL, TX, GA, NC, OH is **auto-created on first boot** and set to Active.
+
+### Step 2 — Let It Run (Dashboard)
+Once an agent is **Active**, the scheduler runs automatically every **30 minutes**.
+
+Hit **Run Now** on the Dashboard to trigger an immediate search without waiting.
+
+Each run:
+1. Picks up all Active agents
+2. For each agent, loops through its target ZIP codes
+3. Searches Google Places (or demo mode) for construction companies
+4. Filters out anyone with a website — those are disqualified
+5. Pushes qualifying companies into the pipeline as `lead_ingested` events
+
+### Step 3 — Monitor (Prospects + Activity)
+- **Dashboard** → Live activity feed shows each lead as it's discovered
+- **Prospects tab** → Every company found, with stage: New → Outreached → Responded → Converted
+- **Territory tab** → Which ZIPs have been searched, when cooldown lifts (default: 90 days)
 
 ---
 
-## 4. Prospect Store (v1.7)
+## Agent Form — Field Reference
 
-Redis-backed dedup layer. Agent's source of truth for who has already been found/contacted.
+### Basic
+| Field | What it does |
+|-------|-------------|
+| Name | Your internal label for this campaign |
+| Status | **Active = sourcer runs on schedule. Paused = saved but not running. Draft = incomplete.** |
+| Description | Notes for yourself |
 
-**Key pattern:** `prospect:phone:{normalized}`, `prospect:email:{normalized}`, `prospect:id:{uuid}`  
-**TTL:** 90 days  
-**CRM sync:** Async — Redis writes complete first, CRM sync runs in background (non-blocking)
+### ICP (Ideal Customer Profile)
+| Field | What it does |
+|-------|-------------|
+| Industries | Search terms: `construction`, `roofing`, `plumbing`, `electrician`, `painter` |
+| Keywords | Additional filters to refine results |
+| Negative Keywords | Exclude: `franchise`, `chain`, `commercial` |
+| Business Type | Label for your records: `residential contractor` |
 
-### Status Lifecycle
+### Territory ← **Most important section**
+| Field | What it does |
+|-------|-------------|
+| **Target ZIPs** | **The ZIP codes the sourcer will search. Add as many as you want.** |
+| Cooldown Days | How long before a ZIP gets re-searched (90 days default) |
+| Target Cities / States | For reference/filtering — ZIPs drive the actual search |
+
+### Outreach
+| Field | What it does |
+|-------|-------------|
+| Channel | Email, SMS, or both |
+| Email Template | Sent to each lead. Use `{name}` and `{company}` as placeholders |
+| SMS Template | Short version for text outreach |
+| Max/Day | Rate limit — prevents flooding. 30-50 is a safe range |
+| Follow-up Days | How many days before sending a follow-up if no reply |
+| Require Warm Lead | Only outreach leads that have already replied (conservative mode) |
+
+### Qualification
+| Field | What it does |
+|-------|-------------|
+| Auto Register | ✅ Automatically add discovered leads to Prospects. Leave on. |
+| Auto Outreach | Send first message automatically. Off = review leads first, then outreach manually. |
+
+---
+
+## Sourcer Modes
+
+### Demo Mode (default — works without any API keys)
+Generates realistic fake construction companies per ZIP. Deterministic — same ZIP always produces the same companies. ~35% simulated as having no website (your qualified leads).
+
+Use this to: test the full pipeline, verify templates, check territory tracking.
+
+### Live Mode
+Set `GOOGLE_PLACES_API_KEY` in Railway Variables → real Google Places data → real companies → real leads.
+
+---
+
+## Dashboard — What Each Section Means
+
+| Section | What it tells you |
+|---------|------------------|
+| System Health | Red = Redis disconnected. Green = all systems go. |
+| Worker Pool | Workers are the AI processes reading the queue. Need at least 1. |
+| Today's Activity | Executions run, leads found, emails sent, success rate |
+| Lead Sourcer panel | Running status, last/next run, Run Now button |
+| Activity Feed | Real-time log — every lead, every action, every decision |
+| Prospect Funnel | How many leads at each stage of the pipeline |
+
+---
+
+## Environment Variables (Railway Variables tab)
+
+| Variable | Required | Description |
+|----------|----------|-------------|
+| `REDIS_URL` | ✅ **Yes** | Redis connection. Use Railway Redis (auto-injected) or Upstash (`rediss://...`) |
+| `ANTHROPIC_API_KEY` | ✅ **Yes** | Powers the AI classification. Get at console.anthropic.com |
+| `GOOGLE_PLACES_API_KEY` | Optional | Real lead sourcing. Without it: demo mode |
+| `SEARCH_INTERVAL_MINUTES` | Optional | Sourcer interval (default: `30`) |
+| `RESEND_API_KEY` | Optional | Email sending. Without it: simulated (logged but not sent) |
+| `RESEND_FROM_EMAIL` | Optional | Sender address: `SmartKlix <hello@yourdomain.com>` |
+| `TWILIO_ACCOUNT_SID` | Optional | SMS sending. Without it: simulated |
+| `TWILIO_AUTH_TOKEN` | Optional | SMS sending |
+| `TWILIO_FROM_NUMBER` | Optional | Your Twilio number: `+13055550001` |
+| `DISABLE_WEEKEND_POLICY` | Optional | `true` = allow outreach on weekends (default: blocked) |
+| `ADMIN_TOKEN` | Optional | Protects admin API with static token |
+| `CLICKHOUSE_HOST` | Optional | Observability logging (not required) |
+
+---
+
+## Architecture
+
 ```
-new → outreached → responded → converted
-                             → do_not_outreach
-```
-
-### Agent Workflow
-```
-1. Find someone → register_prospect (dedup auto-checked)
-2. Before reaching out → check_prospect (instant Redis lookup)
-3. If known + do_not_outreach → Policy Engine HARD BLOCKS — no outreach
-4. If known + converted → Policy Engine HARD BLOCKS — direct CRM contact only
-5. They respond "already a customer" → mark_do_not_outreach
-6. CRM user reviews prospects at /prospect-pool, converts to full contact
-```
-
----
-
-## 5. Policy Engine Rules
-
-| Rule | Condition | Action |
-|------|-----------|--------|
-| 1 | Saturday or Sunday | Block all outreach |
-| 2 | `loop_depth >= 5` | Block execution |
-| 3 | Missing `tenant_id` | Block execution |
-| 4 | Outreach skill + `do_not_outreach` status | Hard block (never contact) |
-| 4 | Outreach skill + `converted` status | Hard block (use CRM directly) |
-| 5 | Warm-only skill + cold lead | Block skill, allow email/SMS |
-
----
-
-## 6. Execution Flow
-
-1. **Ingestion** — `/api/intake/lead` validates payload, checks idempotency, pushes to Redis Stream
-2. **Consumption** — Workers pull via `XREADGROUP` consumer groups
-3. **Classification** — Claude-3 extraction with 0.70 confidence threshold
-4. **Policy Check** — Deterministic rules run BEFORE LLM output acts
-5. **Execution Gate** — 8-stage safety validation
-6. **Prospect Check** — `check_prospect` before any outreach skill
-7. **Skill Execution** — SDK layer with exponential backoff retries
-8. **CRM Sync** — `crm_sync` skill notifies CRM via `/api/intake/sync` (HMAC-signed)
-9. **Finalization** — `XACK`, trace logged to ClickHouse
-
----
-
-## 7. Environment Variables
-
-```env
-REDIS_URL=redis://localhost:6379
-ANTHROPIC_API_KEY=your_key
-
-# CRM connection (for prospect sync)
-CRM_BASE_URL=https://your-crm-url.com
-AGENT_INTERNAL_TOKEN=your_token
-CRM_SYNC_URL=https://your-crm-url.com/api/intake/sync
-
-# Outreach SDKs
-RESEND_API_KEY=your_key
-TWILIO_ACCOUNT_SID=your_sid
-TWILIO_AUTH_TOKEN=your_token
-
-# Observability
-CLICKHOUSE_HOST=http://localhost:8123
-
-# Ports
-INGESTION_PORT=3000
-ADMIN_PORT=3001
+index.ts
+├── services/admin/          HTTP server (single Railway port)
+│   ├── Serves React UI (ui/dist)
+│   └── All /api/* routes
+├── services/scheduler/      Runs sourcer on interval
+├── services/lead-sourcer/   Finds companies without websites
+├── services/workers/        Orchestrator — Redis stream consumer
+│   └── orchestrator.ts      XREADGROUP → policy → LLM → skill
+├── services/llm-classifier/ Claude Haiku — decides next action per lead
+├── services/policy-engine/  Weekend block, loop depth, DNO guard
+├── services/prospect-store/ Redis lead database (dedup by phone/email)
+├── services/territory/      ZIP cooldown tracking
+├── services/agent-config/   Agent CRUD (Redis-backed)
+├── services/activity-feed/  Live event log (last 200 events)
+├── services/token-tracker/  Daily/monthly cost tracking
+├── services/reconciler/     Reclaims stuck queue messages
+├── infrastructure/redis.ts  Single Redis client
+└── sdk/index.ts             Resend · Twilio · Firecrawl · Calendly
 ```
 
 ---
 
-## 8. Running Locally
+## Pipeline Events (Redis Stream: `events_stream`)
 
-```bash
-docker-compose up -d      # Redis + ClickHouse
-npm install
-npx tsx index.ts          # Boot all services
-```
-
----
-
-## 9. Admin Control Plane (Port 3001)
-
-| Endpoint | What |
-|----------|------|
-| `GET /status/:trace_id` | Check execution lifecycle state |
-| `POST /retry/:action_hash` | Reset idempotency for safe retry |
-| `GET /pending` | Audit messages stuck in worker pipeline |
+| Event | Triggered by | What happens next |
+|-------|-------------|-------------------|
+| `lead_ingested` | Sourcer or manual | LLM classifies → `register_prospect` |
+| `action_completed` | Each skill | LLM re-evaluates → next action |
+| `prospect_registered` | register_prospect skill | Pipeline continues |
+| `email_sent` | send_email skill | Status → outreached |
+| `sms_sent` | send_sms skill | Status → outreached |
+| `call_booked` | book_call skill | Status → converted |
 
 ---
 
-## 10. Failure Recovery
+## UI Pages
 
-| Scenario | Detection | Recovery |
-|----------|-----------|----------|
-| Worker crash mid-execution | Redis PEL shows pending unacked message | `XCLAIM` by another worker; idempotency key blocks duplicate |
-| Redis failure | Ingestion returns 500 | Restart infra; stream is persisted (`APPENDONLY yes`) |
-| Skill API outage | Status `FAILED` in ClickHouse | Fix API, then `POST /retry/:action_hash` |
-
----
-
-## 11. Scaling
-
-- **Horizontal:** Spin up more worker instances with unique `workerId`s — Redis handles load balancing
-- **Stateless workers:** All context rebuilt from stream — no shared local state
-- **Prospect store:** Redis SET NX ensures atomic dedup under concurrent writes
+| Page | Purpose |
+|------|---------|
+| **Dashboard** | System health + sourcer control + live feed |
+| **Agents** | ← **Start here.** Create/configure search agents |
+| **Prospects** | Every lead with pipeline stage + notes |
+| **Executions** | Every AI decision with trace ID |
+| **Territory** | ZIP coverage map + cooldown timers |
+| **Analytics** | Token cost, API calls, skill success rates |
+| **Settings** | Integration health check + policy config |
 
 ---
 
-## 12. Changelog
+## Changelog
 
-### v1.7 — May 10, 2026
-- **Prospect Store** (`services/prospect-store/`) — Redis-backed dedup layer with 90-day TTL, async CRM sync
-- **3 new skills:** `check_prospect`, `register_prospect`, `mark_do_not_outreach`
-- **Policy Engine Rule 4:** Hard blocks all outreach skills when prospect is `do_not_outreach` or `converted`
-- `CRM_BASE_URL` + `AGENT_INTERNAL_TOKEN` env vars added for CRM sync
+### V1.8 — May 15, 2026
+- **Lead Sourcer** — proactive discovery of construction companies without websites
+- **Scheduler** — auto-runs every 30min per active agent, seeds default agent on first boot
+- **Agent Config CRUD** — full create/edit/delete UI with ICP + territory + outreach sections
+- **Sourcer status panel** on Dashboard with Run Now trigger
+- **Redis resilience** — lazyConnect, non-fatal boot, process survives Redis downtime
+- New UI pages: Agents, Settings, Prospects inline edit, Analytics
 
-### v1.6 — prior
-- Warm lead gate (Rule 5 in Policy Engine)
-- Railway deployment
-- Redis error handler + retry strategy
+### V1.7 — May 10, 2026
+- Prospect Store with 90-day TTL + dedup
+- Territory/ZIP tracking with cooldown
+- Token tracker + cost analytics
+- Activity feed (live event log)
+- Admin auth token
+
+### V1.6 and earlier
+- Railway deployment, warm lead gate, policy engine, worker pool

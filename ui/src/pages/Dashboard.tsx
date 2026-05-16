@@ -3,7 +3,8 @@ import { useQuery, useMutation } from "@tanstack/react-query";
 import {
   AlertTriangle, CheckCircle, XCircle, Clock, Users, MapPin, Zap,
   TrendingUp, Mail, MessageSquare, RefreshCw, Send, ChevronRight,
-  Activity, DollarSign, Phone, AtSign, Search, Play
+  Activity, DollarSign, Phone, AtSign, Search, Play, Bot,
+  Globe, PhoneCall, ArrowRight, Info
 } from "lucide-react";
 import { formatDistanceToNow, parseISO } from "date-fns";
 import clsx from "clsx";
@@ -148,6 +149,108 @@ function TestLeadPanel() {
               )}
             </div>
           )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ── Pipeline Flow Diagram ─────────────────────────────────
+function PipelineFlow({ metrics }: { metrics: Metrics }) {
+  const [open, setOpen] = useState(false);
+  const p = metrics.prospects;
+  const t = metrics.territory;
+
+  const stages = [
+    {
+      icon: Bot,
+      label: "Agent",
+      sub: "Defines search",
+      stat: null,
+      hint: "Go to Agents tab → set Target ZIPs → set Status to Active",
+      color: "text-blue-400", bg: "bg-blue-950/40", border: "border-blue-900",
+    },
+    {
+      icon: Search,
+      label: "ZIP Search",
+      sub: "Every 30 min",
+      stat: t.totalTracked > 0 ? `${t.totalTracked} ZIPs tracked` : null,
+      hint: "Sourcer scans each ZIP for construction companies",
+      color: "text-purple-400", bg: "bg-purple-950/40", border: "border-purple-900",
+    },
+    {
+      icon: Globe,
+      label: "No Website",
+      sub: "Qualifying filter",
+      stat: t.totalProspectsFound > 0 ? `${t.totalProspectsFound} found` : null,
+      hint: "Companies discoverable online but without a website = your target",
+      color: "text-yellow-400", bg: "bg-yellow-950/40", border: "border-yellow-900",
+    },
+    {
+      icon: Users,
+      label: "Registered",
+      sub: "Prospect pool",
+      stat: p.total > 0 ? `${p.total} total` : null,
+      hint: "Each company is registered and deduplicated",
+      color: "text-indigo-400", bg: "bg-indigo-950/40", border: "border-indigo-900",
+    },
+    {
+      icon: Send,
+      label: "Outreach",
+      sub: "Email / SMS",
+      stat: p.outreached > 0 ? `${p.outreached} contacted` : null,
+      hint: "Email or SMS sent per your agent template",
+      color: "text-green-400", bg: "bg-green-950/40", border: "border-green-900",
+    },
+    {
+      icon: PhoneCall,
+      label: "Converted",
+      sub: "Call booked",
+      stat: p.converted > 0 ? `${p.converted} won` : null,
+      hint: "Lead replied → call scheduled → client",
+      color: "text-brand-yellow", bg: "bg-yellow-950/30", border: "border-yellow-800",
+    },
+  ];
+
+  return (
+    <div className="bg-gray-900 border border-gray-800 rounded-xl overflow-hidden">
+      <button
+        onClick={() => setOpen(v => !v)}
+        className="w-full flex items-center justify-between px-5 py-3 hover:bg-gray-800/50 transition-colors"
+      >
+        <div className="flex items-center gap-2">
+          <Info className="w-4 h-4 text-brand-blue" />
+          <span className="text-[10px] font-black uppercase tracking-widest text-gray-500">Pipeline Flow</span>
+          <span className="text-[10px] text-gray-600 ml-1">— how leads move from search to client</span>
+        </div>
+        <ChevronRight className={clsx("w-4 h-4 text-gray-600 transition-transform", open && "rotate-90")} />
+      </button>
+
+      {open && (
+        <div className="border-t border-gray-800 px-5 py-4">
+          <div className="flex flex-wrap items-start gap-2">
+            {stages.map((s, i, arr) => (
+              <div key={s.label} className="flex items-start gap-2">
+                <div
+                  className={clsx("flex flex-col items-center gap-1 px-3 py-2.5 rounded-xl border min-w-[88px] group relative cursor-default", s.bg, s.border)}
+                  title={s.hint}
+                >
+                  <s.icon className={clsx("w-4 h-4", s.color)} />
+                  <p className={clsx("text-xs font-bold", s.color)}>{s.label}</p>
+                  <p className="text-[9px] text-gray-500 text-center leading-tight">{s.sub}</p>
+                  {s.stat && (
+                    <span className={clsx("text-[9px] font-black mt-0.5", s.color)}>{s.stat}</span>
+                  )}
+                </div>
+                {i < arr.length - 1 && <ArrowRight className="w-4 h-4 text-gray-700 shrink-0 mt-3" />}
+              </div>
+            ))}
+          </div>
+          <p className="mt-3 text-[11px] text-gray-600">
+            <span className="text-brand-blue font-semibold">Agents tab</span> → create agent → add target ZIPs → set Active.
+            The sourcer runs automatically and fills the Prospects tab.
+            Hover each stage to see what it does.
+          </p>
         </div>
       )}
     </div>
@@ -327,6 +430,9 @@ export default function Dashboard() {
           {health === "healthy" ? "System Healthy" : health === "degraded" ? "System Degraded" : "System Offline"}
         </div>
       </div>
+
+      {/* Pipeline flow — always visible so user knows how everything connects */}
+      <PipelineFlow metrics={metrics} />
 
       {/* PEL warning — high priority alert */}
       {metrics.queue.pelCount > 0 && (
