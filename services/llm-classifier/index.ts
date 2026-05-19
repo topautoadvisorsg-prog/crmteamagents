@@ -3,6 +3,7 @@ import dotenv from "dotenv";
 import { LLMClassification, ExecutionContext } from "../../types";
 import { LLMClassificationSchema } from "../../core/schemas";
 import { trackUsage } from "../token-tracker";
+import { LLM_BUSINESS_CONTEXT, QUALIFICATION_RULES } from "../outreach-sop";
 
 dotenv.config();
 
@@ -21,30 +22,59 @@ export class LLMClassifier {
     const leadData    = JSON.stringify(context.current_state);
     const historyData = JSON.stringify(context.history.map(h => ({ type: h.type, payload: h.payload })));
 
+    // Extract key signals from lead state for better classification
+    const state = context.current_state as Record<string, any>;
+    const hasEmail   = !!(state.email);
+    const hasPhone   = !!(state.phone);
+    const noWebsite  = state.no_website === true;
+    const isWarm     = ["warm", "replied", "interested"].includes(state.status);
+    const optedOut   = state.status === "do_not_outreach";
+    const hasWebsite = !!(state.website_url);
+
+    const disqualifyReasons = QUALIFICATION_RULES.disqualify;
+
     const prompt = `
-You are an intent classifier for an AI lead execution system.
+${LLM_BUSINESS_CONTEXT}
+
+---
+
+You are an intent classifier for the Smart Click Agency AI lead execution system.
+Your job: decide the next best action for this lead based on its current state and history.
+
+LEAD SIGNALS DETECTED:
+- Has email: ${hasEmail}
+- Has phone: ${hasPhone}
+- No website: ${noWebsite}
+- Has website URL: ${hasWebsite}
+- Lead status: ${state.status || "new"}
+- Is warm/replied: ${isWarm}
+- Opted out: ${optedOut}
 
 Current Lead Data: ${leadData}
 Event History: ${historyData}
 
-Your job: decide what action to take next for this lead.
+AVAILABLE ACTIONS (pick exactly one):
+- register_prospect    → lead is new and not yet in our system (ALWAYS first)
+- check_prospect       → verify lead exists before outreach
+- send_email           → outreach email (requires email address)
+- send_sms             → outreach SMS (requires phone number)
+- book_call            → schedule a call (ONLY if lead is warm/replied)
+- scrape_site          → scrape their website to qualify website quality
+- mark_do_not_outreach → lead opted out or asked to stop
+- crm_sync             → sync completed lead data to CRM
 
-AVAILABLE ACTIONS (you must pick exactly one of these):
-- register_prospect  → lead is new and not yet in our system (always do this first)
-- check_prospect     → verify if this lead already exists before outreach
-- send_email         → send an outreach email (requires email address)
-- send_sms           → send an outreach SMS (requires phone number)
-- book_call          → schedule a call (only if lead responded/is warm)
-- scrape_site        → enrich lead by scraping their website
-- mark_do_not_outreach → lead opted out or asked to stop contact
-- crm_sync           → sync completed lead data to CRM
+DECISION RULES (apply in order):
+1. If opted out → "mark_do_not_outreach"
+2. If history is empty or no "action_completed" events → "register_prospect"
+3. If registered and disqualified (franchise/chain/modern site) → "crm_sync" with status=disqualified
+4. If registered, no_website=false, no scrape yet → "scrape_site" to check website quality
+5. If registered and warm/replied → "book_call"
+6. If registered, not warm, has email → "send_email"
+7. If registered, not warm, has phone only → "send_sms"
+8. Otherwise → "crm_sync"
 
-DECISION RULES:
-1. If history is empty or has no "action_completed" events → action must be "register_prospect"
-2. If already registered but no outreach yet → action is "send_email" or "send_sms" based on available contact info
-3. If lead has replied / status is warm → action is "book_call"
-4. If lead asked to stop → action is "mark_do_not_outreach"
-5. For enrichment tasks → action is "scrape_site"
+DISQUALIFY THESE LEADS (mark via crm_sync, do not outreach):
+${disqualifyReasons.map(r => `- ${r}`).join("\n")}
 
 OUTPUT ONLY VALID JSON (no markdown, no explanation):
 {

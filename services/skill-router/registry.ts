@@ -3,6 +3,7 @@ import { ResendSDK, TwilioSDK, FirecrawlSDK, CalendlySDK } from "../../sdk";
 import axios from "axios";
 import { generateHMACSignature, generateJWT } from "../../core/security";
 import { checkProspect, registerProspect, updateProspectStatus } from "../prospect-store";
+import { selectEmailTemplate, selectSMSTemplate } from "../outreach-sop";
 
 const resend = new ResendSDK();
 const twilio = new TwilioSDK();
@@ -12,27 +13,98 @@ const calendly = new CalendlySDK();
 export const SKILL_REGISTRY: Record<string, Skill> = {
   send_email: {
     name: "send_email",
-    version: "1.0.0",
-    input_schema: { type: "object", properties: { to: { type: "string" }, subject: { type: "string" }, body: { type: "string" } } },
+    version: "1.1.0",
+    input_schema: {
+      type: "object",
+      properties: {
+        to:        { type: "string" },
+        email:     { type: "string" },
+        subject:   { type: "string" },
+        body:      { type: "string" },
+        // SOP-aware fields — passed from orchestrator lead state
+        name:       { type: "string" },
+        company:    { type: "string" },
+        city:       { type: "string" },
+        industry:   { type: "string" },
+        no_website: { type: "boolean" },
+        is_follow_up: { type: "boolean" },
+        variant:    { type: "string" },
+      },
+    },
     output_schema: { type: "object" },
     timeout_ms: 5000,
     retries: 3,
     idempotent: true,
     async execute(input: any) {
-      return await resend.sendEmail(input.to, input.subject, input.body);
-    }
+      const recipient = input.to || input.email;
+      if (!recipient) throw new Error("send_email requires 'to' or 'email' field");
+
+      // Auto-select SOP template if subject/body not explicitly provided
+      let subject: string = input.subject;
+      let body: string    = input.body;
+
+      if (!subject || !body) {
+        const selected = selectEmailTemplate({
+          noWebsite:   input.no_website === true,
+          isFollowUp:  input.is_follow_up === true,
+          variant:     input.variant,
+          data: {
+            name:     input.name,
+            company:  input.company,
+            city:     input.city,
+            industry: input.industry,
+          },
+        });
+        subject = subject || selected.subject;
+        body    = body    || selected.body;
+
+        console.log(`[send_email] Using SOP template: ${selected.templateId} (${selected.type})`);
+      }
+
+      return await resend.sendEmail(recipient, subject, body);
+    },
   },
+
   send_sms: {
     name: "send_sms",
-    version: "1.0.0",
-    input_schema: { type: "object", properties: { to: { type: "string" }, message: { type: "string" } } },
+    version: "1.1.0",
+    input_schema: {
+      type: "object",
+      properties: {
+        to:      { type: "string" },
+        message: { type: "string" },
+        // SOP-aware fields
+        name:       { type: "string" },
+        company:    { type: "string" },
+        city:       { type: "string" },
+        industry:   { type: "string" },
+        no_website: { type: "boolean" },
+      },
+    },
     output_schema: { type: "object" },
     timeout_ms: 5000,
     retries: 2,
     idempotent: true,
     async execute(input: any) {
-      return await twilio.sendSMS(input.to, input.message);
-    }
+      let message: string = input.message;
+
+      // Auto-select SOP SMS template if message not explicitly provided
+      if (!message) {
+        message = selectSMSTemplate({
+          noWebsite: input.no_website === true,
+          data: {
+            name:     input.name,
+            company:  input.company,
+            city:     input.city,
+            industry: input.industry,
+          },
+        });
+
+        console.log(`[send_sms] Using SOP template: ${input.no_website ? "sms_no_website" : "sms_has_website"}`);
+      }
+
+      return await twilio.sendSMS(input.to, message);
+    },
   },
   scrape_site: {
     name: "scrape_site",
