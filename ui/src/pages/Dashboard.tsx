@@ -65,6 +65,7 @@ function TestLeadPanel() {
     zip: "33101",
     city: "Miami",
     state: "FL",
+    no_website: true,
   });
   const [result, setResult] = useState<{ trace_id?: string; status?: string; message?: string; error?: string } | null>(null);
 
@@ -119,6 +120,30 @@ function TestLeadPanel() {
               </div>
             ))}
           </div>
+          {/* no_website toggle — changes which SOP template the AI picks */}
+          <div className="flex items-center gap-4 py-2 px-3 bg-gray-800/60 rounded-lg border border-gray-700">
+            <label className="flex items-center gap-2 cursor-pointer">
+              <div
+                onClick={() => setForm(f => ({ ...f, no_website: !f.no_website }))}
+                className={clsx(
+                  "w-10 h-5 rounded-full relative transition-colors cursor-pointer",
+                  form.no_website ? "bg-brand-blue" : "bg-gray-600"
+                )}
+              >
+                <span className={clsx(
+                  "absolute top-0.5 w-4 h-4 rounded-full bg-white shadow transition-transform",
+                  form.no_website ? "translate-x-5" : "translate-x-0.5"
+                )} />
+              </div>
+              <span className="text-xs font-semibold text-gray-300">No Website</span>
+            </label>
+            <p className="text-[11px] text-gray-500">
+              {form.no_website
+                ? "✓ Lead has no website — agent sends Type 1 (no website) template"
+                : "Lead has a website — agent sends Type 2 (weak website) template"}
+            </p>
+          </div>
+
           <p className="text-[11px] text-gray-600">Provide at least phone OR email. This bypasses ingestion auth and fires directly into the pipeline for testing.</p>
           <div className="flex items-center gap-3">
             <button
@@ -157,7 +182,7 @@ function TestLeadPanel() {
 
 // ── Pipeline Flow Diagram ─────────────────────────────────
 function PipelineFlow({ metrics }: { metrics: Metrics }) {
-  const [open, setOpen] = useState(false);
+  const [open, setOpen] = useState(true);
   const p = metrics.prospects;
   const t = metrics.territory;
 

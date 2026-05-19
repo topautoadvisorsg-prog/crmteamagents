@@ -4,10 +4,99 @@ import {
   Bot, Plus, RefreshCw, Play, Pause, Edit3, Trash2, ChevronRight,
   ChevronDown, Mail, MessageSquare, Globe, Tag, MapPin, Target,
   CheckCircle, Clock, FileText, Save, X, AlertTriangle, ArrowRight,
-  Search, Users, Send, PhoneCall, Info, Flame, TrendingUp, Building2
+  Search, Users, Send, PhoneCall, Info, Flame, TrendingUp, Building2,
+  Sparkles, RotateCcw
 } from "lucide-react";
 import { MARKETS, STATES, getMarketsByState, INDUSTRIES, type Market } from "../data/markets";
 import clsx from "clsx";
+
+// ── SOP Template Library (mirrors services/outreach-sop/index.ts) ─────────────
+const TEMPLATE_STYLES = [
+  {
+    id: "direct",
+    label: "Direct & Professional",
+    note: "Clear, business-focused, conversion-oriented",
+    email: `Hi {name},
+
+I came across {company} and noticed you don't have a full website set up yet.
+
+A lot of construction companies in {city} are losing potential jobs simply because homeowners search Google before calling anyone — if your business isn't showing up with a professional site, those calls go to a competitor who is.
+
+We help contractors like you build more than just a website. We set up a complete lead generation system that includes:
+
+- A modern, mobile-first website designed to convert visitors into quote requests
+- A CRM to organize and track every lead
+- Automated follow-up so no lead falls through the cracks
+- AI intake to handle after-hours inquiries
+
+The goal isn't just "having a website" — it's turning your online presence into a system that books more jobs.
+
+If you'd like, I can put together a few ideas specific to {company} and show you what this could look like for your business.
+
+Best,
+{sender_name}
+Smart Click Agency
+smartclickagency.com`,
+    sms: `Hi {name}, noticed {company} doesn't have a website yet. We build lead generation systems for contractors — website, CRM, automation. Most clients get inbound calls within 30 days. Worth a quick chat? Reply YES.`,
+  },
+  {
+    id: "casual",
+    label: "Casual & Conversational",
+    note: "Friendly, low-pressure, relatable tone",
+    email: `Hey {name},
+
+I was looking up {company} and noticed you don't have a website set up yet.
+
+Honestly, a lot of contractors are getting more inbound leads right now just by making it easier for customers to find them and request quotes online. Without a website, you're relying entirely on referrals — which works, until it doesn't.
+
+What we do is build the whole system:
+
+- A clean, fast website that works great on phones
+- Quote/estimate request forms so customers can reach you 24/7
+- Automated text and email follow-ups
+- A simple CRM to track jobs and leads
+- AI chat for after-hours inquiries
+
+You'd be surprised how quickly this pays for itself in booked jobs.
+
+Want me to put together a few ideas for {company}? No pressure — just sharing what's been working for other contractors in {city}.
+
+Best,
+{sender_name}
+Smart Click Agency`,
+    sms: `Hey {name}, saw {company} doesn't have a website yet. Quick question — are you getting as many inbound calls as you want? We help contractors get more. 10-min chat? Reply YES.`,
+  },
+  {
+    id: "value",
+    label: "ROI-Focused",
+    note: "Leads with outcomes, numbers, business case",
+    email: `Hi {name},
+
+Quick question: how do most of your new customers find you?
+
+If the answer is mostly referrals, that's great — but it also means you're invisible to everyone in {city} who's searching Google right now for a {industry}.
+
+We work with construction companies to close that gap. We build a full lead generation system — not just a website — that includes:
+
+→ A professional site designed to convert visitors into booked jobs
+→ Online quote/estimate request capability
+→ CRM to manage your lead pipeline
+→ Automated follow-up via email and text
+→ AI intake for calls and messages you can't answer immediately
+
+Most of our clients see new inbound inquiries within the first 30 days.
+
+I'd love to put together a few ideas specific to {company}. Would a quick 10-minute call this week work?
+
+Best,
+{sender_name}
+Smart Click Agency
+smartclickagency.com`,
+    sms: `Hi {name}, noticed {company} doesn't have a website yet. Homeowners search Google first — if you're not there, that job goes to someone else. We fix that. 10-min call? Reply YES.`,
+  },
+] as const;
+
+type TemplateStyleId = typeof TEMPLATE_STYLES[number]["id"];
 
 type AgentStatus = "active" | "paused" | "draft";
 type OutreachChannel = "email" | "sms" | "both";
@@ -257,17 +346,24 @@ function AgentForm({ initial, onSave, onCancel, isSaving }: {
   onCancel: () => void;
   isSaving: boolean;
 }) {
+  const defaultStyle = TEMPLATE_STYLES[0]; // "direct" by default
+
+  const [templateStyle, setTemplateStyle] = useState<TemplateStyleId>(
+    // Try to detect which style was saved previously (rough heuristic)
+    initial.outreach?.emailTemplate?.includes("Quick question:") ? "value"
+    : initial.outreach?.emailTemplate?.includes("Hey {name}") ? "casual"
+    : "direct"
+  );
+
   const [form, setForm] = useState<any>({
     name: initial.name || "New Agent",
     description: initial.description || "",
-    status: initial.status || "draft",
+    status: initial.status || "active",
     icp: {
       industries: initial.icp?.industries || [],
       keywords: initial.icp?.keywords || [],
-      negativeKeywords: initial.icp?.negativeKeywords || [],
-      businessType: initial.icp?.businessType || "",
-      minEmployees: initial.icp?.minEmployees || "",
-      maxEmployees: initial.icp?.maxEmployees || "",
+      negativeKeywords: initial.icp?.negativeKeywords || ["franchise", "chain", "national"],
+      businessType: initial.icp?.businessType || "residential",
     },
     territory: {
       targetZips: initial.territory?.targetZips || [],
@@ -277,9 +373,9 @@ function AgentForm({ initial, onSave, onCancel, isSaving }: {
     },
     outreach: {
       channel: initial.outreach?.channel || "email",
-      emailTemplate: initial.outreach?.emailTemplate || "Hi {name},\n\nI noticed your business {company}...\n\nBest,\nSmartKlix Team",
-      smsTemplate: initial.outreach?.smsTemplate || "Hi {name}, this is SmartKlix. Reply YES to learn more.",
-      maxOutreachPerDay: initial.outreach?.maxOutreachPerDay || 50,
+      emailTemplate: initial.outreach?.emailTemplate || defaultStyle.email,
+      smsTemplate: initial.outreach?.smsTemplate || defaultStyle.sms,
+      maxOutreachPerDay: initial.outreach?.maxOutreachPerDay || 30,
       followUpDays: initial.outreach?.followUpDays || 3,
       requireWarmLead: initial.outreach?.requireWarmLead || false,
     },
@@ -289,6 +385,13 @@ function AgentForm({ initial, onSave, onCancel, isSaving }: {
       autoOutreach: initial.qualification?.autoOutreach || false,
     },
   });
+
+  const loadTemplateStyle = (styleId: TemplateStyleId) => {
+    const style = TEMPLATE_STYLES.find(s => s.id === styleId)!;
+    setTemplateStyle(styleId);
+    set("outreach.emailTemplate", style.email);
+    set("outreach.smsTemplate", style.sms);
+  };
 
   const set = (path: string, value: any) => {
     const keys = path.split(".");
@@ -477,21 +580,81 @@ function AgentForm({ initial, onSave, onCancel, isSaving }: {
             Only outreach warm leads (responded to initial contact)
           </label>
         </div>
+        {/* Template Style Picker */}
+        <div>
+          <div className="flex items-center gap-2 mb-2">
+            <Sparkles className="w-3.5 h-3.5 text-brand-yellow" />
+            <label className="text-xs text-gray-400 font-semibold">Outreach Style</label>
+            <span className="text-[10px] text-gray-600">— Smart Click SOP templates · variables auto-fill at send time</span>
+          </div>
+          <div className="grid grid-cols-1 lg:grid-cols-3 gap-2 mb-3">
+            {TEMPLATE_STYLES.map(style => (
+              <button
+                key={style.id}
+                type="button"
+                onClick={() => loadTemplateStyle(style.id)}
+                className={clsx(
+                  "text-left px-3 py-2.5 rounded-xl border transition-colors",
+                  templateStyle === style.id
+                    ? "bg-brand-blue/20 border-brand-blue text-blue-300"
+                    : "bg-gray-800 border-gray-700 text-gray-400 hover:border-gray-600"
+                )}
+              >
+                <p className="text-xs font-bold">{style.label}</p>
+                <p className="text-[10px] text-gray-500 mt-0.5">{style.note}</p>
+              </button>
+            ))}
+          </div>
+          <p className="text-[10px] text-gray-600">
+            Variables: <code className="bg-gray-800 px-1 rounded">{"{name}"}</code>{" "}
+            <code className="bg-gray-800 px-1 rounded">{"{company}"}</code>{" "}
+            <code className="bg-gray-800 px-1 rounded">{"{city}"}</code>{" "}
+            <code className="bg-gray-800 px-1 rounded">{"{industry}"}</code>{" "}
+            — filled automatically from lead data at send time.
+          </p>
+        </div>
+
         {(form.outreach.channel === "email" || form.outreach.channel === "both") && (
           <div>
-            <label className="block text-xs text-gray-500 mb-1.5">Email Template</label>
-            <p className="text-[10px] text-gray-600 mb-2">Variables: {"{name}"}, {"{company}"}, {"{city}"}, {"{industry}"}</p>
-            <textarea value={form.outreach.emailTemplate} onChange={e => set("outreach.emailTemplate", e.target.value)}
-              rows={6}
-              className="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-xs text-gray-100 focus:outline-none focus:border-brand-blue font-mono resize-none" />
+            <div className="flex items-center justify-between mb-1.5">
+              <label className="text-xs text-gray-500">Email Body</label>
+              <button
+                type="button"
+                onClick={() => loadTemplateStyle(templateStyle)}
+                className="flex items-center gap-1 text-[10px] text-gray-600 hover:text-gray-400"
+              >
+                <RotateCcw className="w-3 h-3" /> Reset to {TEMPLATE_STYLES.find(s => s.id === templateStyle)?.label}
+              </button>
+            </div>
+            <textarea
+              value={form.outreach.emailTemplate}
+              onChange={e => set("outreach.emailTemplate", e.target.value)}
+              rows={10}
+              className="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-xs text-gray-100 focus:outline-none focus:border-brand-blue font-mono resize-none"
+            />
           </div>
         )}
+
         {(form.outreach.channel === "sms" || form.outreach.channel === "both") && (
           <div>
-            <label className="block text-xs text-gray-500 mb-1.5">SMS Template <span className="text-gray-600">(keep under 160 chars)</span></label>
-            <textarea value={form.outreach.smsTemplate} onChange={e => set("outreach.smsTemplate", e.target.value)}
+            <div className="flex items-center justify-between mb-1.5">
+              <label className="text-xs text-gray-500">
+                SMS Message <span className="text-gray-600">(keep under 160 chars)</span>
+              </label>
+              <button
+                type="button"
+                onClick={() => loadTemplateStyle(templateStyle)}
+                className="flex items-center gap-1 text-[10px] text-gray-600 hover:text-gray-400"
+              >
+                <RotateCcw className="w-3 h-3" /> Reset
+              </button>
+            </div>
+            <textarea
+              value={form.outreach.smsTemplate}
+              onChange={e => set("outreach.smsTemplate", e.target.value)}
               rows={3}
-              className="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-xs text-gray-100 focus:outline-none focus:border-brand-blue font-mono resize-none" />
+              className="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-xs text-gray-100 focus:outline-none focus:border-brand-blue font-mono resize-none"
+            />
             <p className={clsx("text-[10px] mt-1", form.outreach.smsTemplate.length > 160 ? "text-red-400" : "text-gray-600")}>
               {form.outreach.smsTemplate.length}/160 characters
             </p>
@@ -535,18 +698,32 @@ function AgentForm({ initial, onSave, onCancel, isSaving }: {
       </Section>
 
       {/* Actions */}
-      <div className="flex items-center gap-3 pt-2">
+      <div className="flex items-center gap-3 pt-2 flex-wrap">
         <button
-          onClick={() => onSave(form)}
+          onClick={() => onSave({ ...form, status: "active" })}
+          disabled={!form.name || form.territory.targetZips.length === 0 || isSaving}
+          className="flex items-center gap-2 px-5 py-2.5 bg-green-700 hover:bg-green-600 text-white text-sm font-semibold rounded-lg transition-colors disabled:opacity-50"
+        >
+          <Play className="w-4 h-4" />
+          {isSaving ? "Saving…" : "Save & Activate"}
+        </button>
+        <button
+          onClick={() => onSave({ ...form, status: "draft" })}
           disabled={!form.name || isSaving}
-          className="flex items-center gap-2 px-5 py-2.5 bg-brand-blue hover:bg-blue-700 text-white text-sm font-semibold rounded-lg transition-colors disabled:opacity-50"
+          className="flex items-center gap-2 px-4 py-2.5 bg-gray-800 hover:bg-gray-700 text-gray-300 text-sm font-semibold rounded-lg transition-colors disabled:opacity-50"
         >
           <Save className="w-4 h-4" />
-          {isSaving ? "Saving…" : "Save Agent"}
+          Save as Draft
         </button>
-        <button onClick={onCancel} className="px-4 py-2.5 bg-gray-800 text-gray-400 text-sm rounded-lg hover:bg-gray-700">
+        <button onClick={onCancel} className="px-4 py-2.5 text-gray-500 text-sm rounded-lg hover:text-gray-300">
           Cancel
         </button>
+        {form.territory.targetZips.length === 0 && (
+          <p className="text-[11px] text-yellow-500 flex items-center gap-1">
+            <AlertTriangle className="w-3 h-3" />
+            Add at least one market to activate
+          </p>
+        )}
       </div>
     </div>
   );
