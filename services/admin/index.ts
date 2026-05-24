@@ -573,6 +573,8 @@ app.post("/api/test-lead", async (req, res) => {
       zip = "33101",
       city = "Miami",
       state = "FL",
+      no_website = true,
+      industry = "General Contractor",
       tenantId = "smartklix-test",
     } = req.body;
 
@@ -601,6 +603,8 @@ app.post("/api/test-lead", async (req, res) => {
         zip,
         city,
         state,
+        no_website,   // ← tells classifier which SOP template to pick
+        industry,     // ← used in outreach copy personalization
         idempotency_key: `test-${trace_id}`,
         schema_version: "1.0",
       },
