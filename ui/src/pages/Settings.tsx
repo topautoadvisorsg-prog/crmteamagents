@@ -1,5 +1,5 @@
 import { useQuery } from "@tanstack/react-query";
-import { CheckCircle, XCircle, AlertTriangle, RefreshCw, Shield, Zap, Mail, MessageSquare, Globe, Database, DollarSign, Calendar, Lock } from "lucide-react";
+import { CheckCircle, XCircle, AlertTriangle, RefreshCw, Shield, Zap, Mail, MessageSquare, Globe, Database, DollarSign, Calendar, MapPin } from "lucide-react";
 import clsx from "clsx";
 
 interface Integration {
@@ -18,6 +18,7 @@ interface SettingsResponse {
     calendly: Integration;
     clickhouse: Integration;
     crm: Integration;
+    googlePlaces: Integration & { note?: string };
   };
   policies: {
     weekendOutreachDisabled: boolean;
@@ -28,6 +29,8 @@ interface SettingsResponse {
     tokenCostOutputPerM: number;
     resendFromEmail: string;
     adminAuthEnabled: boolean;
+    searchIntervalMinutes: number;
+    leadSourcerMode: string;
   };
   timestamp: string;
 }
@@ -36,6 +39,7 @@ const STATUS_CONFIG: Record<string, { icon: any; color: string; label: string }>
   connected:        { icon: CheckCircle,   color: "text-green-400",  label: "Connected" },
   configured:       { icon: CheckCircle,   color: "text-green-400",  label: "Configured" },
   simulation_mode:  { icon: AlertTriangle, color: "text-yellow-400", label: "Simulation Mode" },
+  demo_mode:        { icon: AlertTriangle, color: "text-yellow-400", label: "Demo Mode" },
   not_configured:   { icon: XCircle,       color: "text-gray-500",   label: "Not Configured" },
   missing:          { icon: XCircle,       color: "text-red-400",    label: "Missing — Required" },
   disconnected:     { icon: XCircle,       color: "text-red-400",    label: "Disconnected" },
@@ -43,25 +47,27 @@ const STATUS_CONFIG: Record<string, { icon: any; color: string; label: string }>
 };
 
 const ENV_VARS: Record<string, { vars: string[]; docs?: string; impact: string }> = {
-  redis:      { vars: ["REDIS_URL"], impact: "Required — nothing works without Redis" },
-  anthropic:  { vars: ["ANTHROPIC_API_KEY"], impact: "Required — LLM classification disabled without this" },
-  resend:     { vars: ["RESEND_API_KEY", "RESEND_FROM_EMAIL"], impact: "Optional — email sends will be simulated" },
-  twilio:     { vars: ["TWILIO_ACCOUNT_SID", "TWILIO_AUTH_TOKEN", "TWILIO_FROM_NUMBER"], impact: "Optional — SMS will be simulated" },
-  firecrawl:  { vars: ["FIRECRAWL_API_KEY"], impact: "Optional — web scraping will be simulated" },
-  calendly:   { vars: ["CALENDLY_API_KEY"], impact: "Optional — booking will be simulated" },
-  clickhouse: { vars: ["CLICKHOUSE_HOST", "CLICKHOUSE_USER", "CLICKHOUSE_PASSWORD"], impact: "Optional — execution logs stored in Redis only" },
-  crm:        { vars: ["CRM_BASE_URL", "AGENT_INTERNAL_TOKEN", "CRM_CALLBACK_URL"], impact: "Optional — prospects won't sync to CRM" },
+  redis:        { vars: ["REDIS_URL"], impact: "Required — nothing works without Redis" },
+  anthropic:    { vars: ["ANTHROPIC_API_KEY"], impact: "Required — LLM classification disabled without this" },
+  googlePlaces: { vars: ["GOOGLE_PLACES_API_KEY"], impact: "Recommended — without this the sourcer runs in demo mode with fake leads" },
+  resend:       { vars: ["RESEND_API_KEY", "RESEND_FROM_EMAIL"], impact: "Optional — email sends will be simulated" },
+  twilio:       { vars: ["TWILIO_ACCOUNT_SID", "TWILIO_AUTH_TOKEN", "TWILIO_FROM_NUMBER"], impact: "Optional — SMS will be simulated" },
+  firecrawl:    { vars: ["FIRECRAWL_API_KEY"], impact: "Optional — web scraping will be simulated" },
+  calendly:     { vars: ["CALENDLY_API_KEY"], impact: "Optional — booking will be simulated" },
+  clickhouse:   { vars: ["CLICKHOUSE_HOST", "CLICKHOUSE_USER", "CLICKHOUSE_PASSWORD"], impact: "Optional — execution logs stored in Redis only" },
+  crm:          { vars: ["CRM_BASE_URL", "AGENT_INTERNAL_TOKEN", "CRM_CALLBACK_URL"], impact: "Optional — prospects won't sync to CRM" },
 };
 
 const INTEGRATION_META: Record<string, { label: string; icon: any; description: string }> = {
-  redis:      { label: "Redis",           icon: Database,     description: "Streams, prospect store, territory, stats — the core of the platform" },
-  anthropic:  { label: "Anthropic (LLM)", icon: Zap,          description: "Claude classifies every lead intent and determines the next action" },
-  resend:     { label: "Resend (Email)",  icon: Mail,         description: "Sends outreach emails. Without this key, emails are logged but not sent" },
-  twilio:     { label: "Twilio (SMS)",    icon: MessageSquare,description: "Sends outreach SMS. Without this, SMS is logged but not sent" },
-  firecrawl:  { label: "Firecrawl",       icon: Globe,        description: "Scrapes lead websites for enrichment data" },
-  calendly:   { label: "Calendly",        icon: Calendar,     description: "Books meetings with warm leads automatically" },
-  clickhouse: { label: "ClickHouse",      icon: Database,     description: "Long-term analytics storage. Redis is used as fallback" },
-  crm:        { label: "SmartKlix CRM",   icon: Globe,        description: "Syncs discovered prospects back to the CRM database" },
+  redis:        { label: "Redis",               icon: Database,      description: "Streams, prospect store, territory, stats — the core of the platform" },
+  anthropic:    { label: "Anthropic (LLM)",     icon: Zap,           description: "Claude classifies every lead intent and determines the next action" },
+  googlePlaces: { label: "Google Places API",   icon: MapPin,        description: "Powers the lead sourcer — finds construction companies without websites. Without this key, demo leads are used instead." },
+  resend:       { label: "Resend (Email)",       icon: Mail,          description: "Sends outreach emails. Without this key, emails are logged but not sent" },
+  twilio:       { label: "Twilio (SMS)",         icon: MessageSquare, description: "Sends outreach SMS. Without this, SMS is logged but not sent" },
+  firecrawl:    { label: "Firecrawl",            icon: Globe,         description: "Scrapes lead websites for enrichment data" },
+  calendly:     { label: "Calendly",             icon: Calendar,      description: "Books meetings with warm leads automatically" },
+  clickhouse:   { label: "ClickHouse",           icon: Database,      description: "Long-term analytics storage. Redis is used as fallback" },
+  crm:          { label: "SmartKlix CRM",        icon: Globe,         description: "Syncs discovered prospects back to the CRM database" },
 };
 
 function IntegrationRow({ id, integration }: { id: string; integration: Integration }) {
@@ -108,7 +114,7 @@ export default function Settings() {
     refetchInterval: 60_000,
   });
 
-  const integrationOrder = ["redis", "anthropic", "resend", "twilio", "firecrawl", "calendly", "crm", "clickhouse"] as const;
+  const integrationOrder = ["redis", "anthropic", "googlePlaces", "resend", "twilio", "firecrawl", "calendly", "crm", "clickhouse"] as const;
 
   const configured = data ? integrationOrder.filter(k => data.integrations[k].configured).length : 0;
   const total = integrationOrder.length;
@@ -233,6 +239,22 @@ export default function Settings() {
                   status: data.policies.adminAuthEnabled ? "ok" : "warn",
                   env: "ADMIN_TOKEN",
                   note: "Protect the admin API with a static token in production",
+                },
+                {
+                  label: "Lead Sourcer Interval",
+                  value: `Every ${data.policies.searchIntervalMinutes ?? 30} minutes`,
+                  status: "neutral",
+                  env: "SEARCH_INTERVAL_MINUTES",
+                  note: "How often the sourcer scans ZIP codes for new construction companies",
+                },
+                {
+                  label: "Lead Sourcer Mode",
+                  value: data.policies.leadSourcerMode === "google_places" ? "Live — Google Places API" : "Demo mode — fake leads",
+                  status: data.policies.leadSourcerMode === "google_places" ? "ok" : "warn",
+                  env: "GOOGLE_PLACES_API_KEY",
+                  note: data.policies.leadSourcerMode === "google_places"
+                    ? "Sourcing real construction companies without websites"
+                    : "Add GOOGLE_PLACES_API_KEY to switch to real lead sourcing",
                 },
               ].map(row => (
                 <div key={row.label} className="px-5 py-3 flex items-start gap-4">
